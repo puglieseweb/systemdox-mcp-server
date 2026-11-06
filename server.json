@@ -1,0 +1,35 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.puglieseweb/systemdox",
+  "description": "Your architecture in your agents' context: checks, specs, ADRs and docs over MCP, at write time.",
+  "websiteUrl": "https://www.systemdox.com",
+  "repository": {
+    "url": "https://github.com/puglieseweb/systemdox-mcp-server",
+    "source": "github"
+  },
+  "version": "0.1.21",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@systemdox/mcp-server",
+      "version": "0.1.21",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "SYSTEMDOX_API_KEY",
+          "description": "SystemDox API key (generate in workspace settings). Scopes every tool call to the key's tenant.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "SYSTEMDOX_API_URL",
+          "description": "REST API base URL override (optional).",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

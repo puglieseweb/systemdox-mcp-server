@@ -1,0 +1,213 @@
+{
+  "key": "CHANGE#acme/booking-api#customer-reminders",
+  "owner": "acme",
+  "repo": "booking-api",
+  "slug": "customer-reminders",
+  "title": "A customer is reminded of a booking by message, on the location's schedule",
+  "size": "ordinary",
+  "archived": false,
+  "states": {
+    "decision": "passed",
+    "contract": "passed",
+    "behaviour": "being built",
+    "plan": "being built",
+    "release": "waiting for your review"
+  },
+  "counts": {
+    "proposed": 0,
+    "built": 9,
+    "defect": 0,
+    "unbuilt": 0,
+    "open": 0,
+    "untagged": 0,
+    "total": 9
+  },
+  "waitingForReview": [
+    {
+      "number": 226,
+      "title": "Release: preprod to main",
+      "state": "open",
+      "base": "main",
+      "repo": "acme/booking-api",
+      "openedAt": "2026-10-29T09:00:00Z",
+      "mergedAt": null,
+      "url": "https://github.com/acme/booking-api/pull/226",
+      "approvingReview": null
+    }
+  ],
+  "lastActivity": "2026-10-29T09:00:00Z",
+  "syncedAt": "2026-11-01T08:00:12Z",
+  "proposal": {
+    "path": "specs/changes/customer-reminders/proposal.md",
+    "docId": "RepoDoc#acme/booking-api#9f1c0a2b7d3e",
+    "pullRequest": {
+      "number": 219,
+      "title": "brief(customer-reminders): the contract, the scenarios and the plan",
+      "state": "merged",
+      "base": "preprod",
+      "repo": "acme/booking-api",
+      "openedAt": "2026-10-19T18:14:00Z",
+      "mergedAt": "2026-10-20T10:14:00Z",
+      "url": "https://github.com/acme/booking-api/pull/219",
+      "approvingReview": null
+    },
+    "direct": false
+  },
+  "decision": {
+    "adr": "ADR-044",
+    "title": "A customer is reminded of a booking by message, on the location's schedule",
+    "status": "accepted",
+    "docId": "RepoDoc#acme/docs#4c0a9e1f6b2d",
+    "pullRequest": {
+      "number": 412,
+      "title": "ADR-044: a customer is reminded of a booking by message",
+      "state": "merged",
+      "base": "preprod",
+      "repo": "acme/docs",
+      "openedAt": "2026-10-19T18:10:00Z",
+      "mergedAt": "2026-10-20T10:12:00Z",
+      "url": "https://github.com/acme/docs/pull/412",
+      "approvingReview": null
+    }
+  },
+  "contract": {
+    "files": [
+      {
+        "path": "specs/changes/customer-reminders/openapi.yaml",
+        "docId": "RepoDoc#acme/booking-api#a71e5c3d9f04",
+        "pullRequest": {
+          "number": 219,
+          "title": "brief(customer-reminders): the contract, the scenarios and the plan",
+          "state": "merged",
+          "base": "preprod",
+          "repo": "acme/booking-api",
+          "openedAt": "2026-10-19T18:14:00Z",
+          "mergedAt": "2026-10-20T10:14:00Z",
+          "url": "https://github.com/acme/booking-api/pull/219",
+          "approvingReview": null
+        },
+        "direct": false
+      }
+    ],
+    "operations": [
+      {
+        "method": "GET",
+        "path": "/locations/{locationId}/reminders",
+        "operationId": "getReminderSettings",
+        "summary": "The location's reminder settings"
+      },
+      {
+        "method": "PUT",
+        "path": "/locations/{locationId}/reminders",
+        "operationId": "putReminderSettings",
+        "summary": "Sets leadTimeMinutes and hour"
+      }
+    ],
+    "channels": [
+      {
+        "name": "bookingReminderSent",
+        "address": "bookings",
+        "messages": [
+          "booking.reminder.sent"
+        ]
+      }
+    ]
+  },
+  "behaviour": {
+    "files": [
+      {
+        "path": "tests/features/reminders.feature",
+        "docId": "RepoDoc#acme/booking-api#b2d47e8a1c05",
+        "pullRequest": {
+          "number": 219,
+          "title": "brief(customer-reminders): the contract, the scenarios and the plan",
+          "state": "merged",
+          "base": "preprod",
+          "repo": "acme/booking-api",
+          "openedAt": "2026-10-19T18:14:00Z",
+          "mergedAt": "2026-10-20T10:14:00Z",
+          "url": "https://github.com/acme/booking-api/pull/219",
+          "approvingReview": null
+        },
+        "direct": false,
+        "title": "A customer is reminded of a booking (ADR-044)",
+        "runner": "pytest-bdd",
+        "scenarios": [
+          {
+            "id": "REM-01",
+            "title": "A location sets a lead time and an hour",
+            "state": "built",
+            "steps": [
+              "Given a location in \"acme\"",
+              "When its owner sets a lead time of one day and the hour 18:00",
+              "Then the location has that reminder schedule"
+            ]
+          }
+        ],
+        "counts": {
+          "proposed": 0,
+          "built": 9,
+          "defect": 0,
+          "unbuilt": 0,
+          "open": 0,
+          "untagged": 0,
+          "total": 9
+        }
+      }
+    ],
+    "counts": {
+      "proposed": 0,
+      "built": 9,
+      "defect": 0,
+      "unbuilt": 0,
+      "open": 0,
+      "untagged": 0,
+      "total": 9
+    }
+  },
+  "plan": {
+    "file": {
+      "path": "specs/changes/customer-reminders/plan.md",
+      "docId": "RepoDoc#acme/booking-api#c3e9b1d05a76",
+      "pullRequest": {
+        "number": 219,
+        "title": "brief(customer-reminders): the contract, the scenarios and the plan",
+        "state": "merged",
+        "base": "preprod",
+        "repo": "acme/booking-api",
+        "openedAt": "2026-10-19T18:14:00Z",
+        "mergedAt": "2026-10-20T10:14:00Z",
+        "url": "https://github.com/acme/booking-api/pull/219",
+        "approvingReview": null
+      },
+      "direct": false
+    },
+    "draftId": "pln_01JBXW3K9QZ6R8T2M5N7P0AVCD",
+    "board": {
+      "number": 74,
+      "title": "Booking: customer reminders (ADR-044)",
+      "url": "https://github.com/orgs/acme/projects/74",
+      "items": {
+        "todo": 0,
+        "inProgress": 1,
+        "done": 8,
+        "truncated": false
+      }
+    }
+  },
+  "release": {
+    "prs": [
+      {
+        "number": 226,
+        "title": "Release: preprod to main",
+        "state": "open",
+        "base": "main",
+        "repo": "acme/booking-api",
+        "openedAt": "2026-10-29T09:00:00Z",
+        "mergedAt": null,
+        "url": "https://github.com/acme/booking-api/pull/226",
+        "approvingReview": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,218 @@
+{
+  "guardrails": [
+    {
+      "id": "gr-tenant",
+      "title": "Never trust a client-supplied tenant id",
+      "description": "Every feature row is partitioned PK = TENANT#{principal.tenant_id}. Derive the tenant from the principal, never from the request body or a query string.",
+      "category": "backend",
+      "severity": "critical",
+      "pattern": "tenant_id = body['tenantId']",
+      "fix": "principal = resolve_principal(event)\npk = tenant_pk(principal)",
+      "updatedAt": "2026-07-01T00:00:00Z"
+    },
+    {
+      "id": "gr-role",
+      "title": "Mutating endpoints require a role check",
+      "description": "Call require_role(principal, 'editor') or 'admin' before any write. Read endpoints do not.",
+      "category": "backend",
+      "severity": "high",
+      "pattern": "def handler(event, context):\n    put_item(...)",
+      "fix": "require_role(principal, 'editor')\nput_item(...)",
+      "updatedAt": "2026-07-02T00:00:00Z"
+    },
+    {
+      "id": "gr-authz-header",
+      "title": "API keys must be sent as Authorization: Bearer",
+      "description": "The gateway authoriser only reads the Authorization header. An X-API-Key-only request is rejected before it reaches a handler.",
+      "category": "api",
+      "severity": "medium",
+      "pattern": "headers = {'X-API-Key': key}",
+      "fix": "headers = {'Authorization': f'Bearer {key}'}",
+      "updatedAt": "2026-06-20T00:00:00Z"
+    },
+    {
+      "id": "gr-cn",
+      "title": "Compose class names with cn()",
+      "description": "Import cn() from @systemdox/utils rather than concatenating template strings.",
+      "category": "frontend",
+      "severity": "low",
+      "pattern": "className={`btn ${active ? 'on' : ''}`}",
+      "fix": "className={cn('btn', active && 'on')}",
+      "updatedAt": "2026-05-01T00:00:00Z"
+    }
+  ],
+  "specs": [
+    {
+      "draftId": "spec-preferences",
+      "name": "User preferences endpoint",
+      "status": "ready",
+      "requirementCount": 2,
+      "updatedAt": "2026-07-05T00:00:00Z"
+    },
+    {
+      "draftId": "spec-notifications",
+      "name": "Notifications feature",
+      "status": "draft",
+      "requirementCount": 1,
+      "updatedAt": "2026-07-08T00:00:00Z"
+    },
+    {
+      "draftId": "spec-retired",
+      "name": "Legacy portal",
+      "status": "archived",
+      "requirementCount": 4,
+      "updatedAt": "2025-11-01T00:00:00Z"
+    }
+  ],
+  "specBodies": {
+    "spec-preferences": {
+      "draftId": "spec-preferences",
+      "name": "User preferences endpoint",
+      "status": "ready",
+      "proposalContent": "Console users need per-user preferences (theme, default project, digest cadence) that survive across devices. This spec adds a REST endpoint under /v1/preferences on the systemdox-backend-prod stack.",
+      "taskContent": "1. Add the prefs_api handler.\n2. Register GET/PUT routes in template.yaml.\n3. Add a typed BaseApiService subclass in the console app.",
+      "requirements": [
+        {
+          "reqId": "REQ-1",
+          "name": "REQ-1 Tenancy",
+          "content": "Preference rows MUST be keyed PK = TENANT#{tenant_id}, SK = PREF#{user_sub}. The handler MUST call resolve_principal(event) and derive the key with tenant_pk(principal). A client-supplied tenant id MUST be rejected."
+        },
+        {
+          "reqId": "REQ-2",
+          "name": "REQ-2 Authorisation",
+          "content": "GET /v1/preferences MUST be readable by any authenticated member. PUT /v1/preferences MUST call require_role(principal, 'editor'). Requests MUST carry Authorization: Bearer <key>."
+        }
+      ]
+    },
+    "spec-notifications": {
+      "draftId": "spec-notifications",
+      "name": "Notifications feature",
+      "status": "draft",
+      "proposalContent": "In-app notifications for staleness alerts and publish failures. Specs follow the shared-specs convention: RFC 2119 keywords (MUST/SHOULD/MAY) and Given/When/Then scenarios.",
+      "taskContent": "",
+      "requirements": [
+        {
+          "reqId": "REQ-1",
+          "name": "REQ-1 Delivery",
+          "content": "Given a publish failure, When the worker exhausts its retries, Then a notification MUST be written to the tenant's notification feed. Notifications SHOULD be deduplicated by job id."
+        }
+      ]
+    }
+  },
+  "docs": {
+    "items": [
+      {
+        "id": "doc-db-design",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/architecture/database/db_design.md",
+        "title": "Database design — single-table, tenant-partitioned",
+        "doc_type": "architecture",
+        "size": 8000,
+        "synced_at": "2026-07-06T00:00:00Z"
+      },
+      {
+        "id": "doc-auth",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/architecture/auth.md",
+        "title": "Authentication and authorisation",
+        "doc_type": "architecture",
+        "size": 6000,
+        "synced_at": "2026-07-04T00:00:00Z"
+      },
+      {
+        "id": "doc-adr-022",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/adr/ADR-022-mcp-server.md",
+        "title": "ADR-022: Host the MCP server as a Lambda",
+        "doc_type": "adr",
+        "size": 4000,
+        "synced_at": "2026-07-02T00:00:00Z"
+      },
+      {
+        "id": "doc-docs-publishing",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/architecture/docs-publishing.md",
+        "title": "Docs publishing pipeline",
+        "doc_type": "architecture",
+        "size": 5000,
+        "synced_at": "2026-07-09T00:00:00Z"
+      },
+      {
+        "id": "doc-backend-routes",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/architecture/backend-routes.md",
+        "title": "Adding a backend route",
+        "doc_type": "guide",
+        "size": 3000,
+        "synced_at": "2026-07-07T00:00:00Z"
+      },
+      {
+        "id": "doc-frontend-services",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/guides/frontend-api-services.md",
+        "title": "Frontend API services",
+        "doc_type": "guide",
+        "size": 2500,
+        "synced_at": "2026-06-28T00:00:00Z"
+      },
+      {
+        "id": "doc-header",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/guides/console-header.md",
+        "title": "The cross-surface console header",
+        "doc_type": "guide",
+        "size": 2000,
+        "synced_at": "2026-06-30T00:00:00Z"
+      },
+      {
+        "id": "doc-broken",
+        "repo_full_name": "puglieseweb/product-systemdox",
+        "path": "docs/guides/deleted-upstream.md",
+        "title": "Guide deleted upstream",
+        "doc_type": "guide",
+        "size": 1000,
+        "synced_at": "2026-06-01T00:00:00Z"
+      }
+    ]
+  },
+  "docBodies": {
+    "doc-db-design": {
+      "content": "# Database design\n\nAll feature data lives in one DynamoDB table, partitioned by tenant.\n\n## Keys\n\n- `PK = TENANT#{principal.tenant_id}` — never `USER#`, never a client-supplied value.\n- `SK` names the entity: `SPEC#{id}`, `DOC#{id}`, `PREF#{user_sub}`.\n\nUse `tenant_pk(principal)` to build the partition key and `assert_tenant_owns(principal, item)` for items keyed by a bare id (jobs, agent sessions). Attribution goes in `createdBy` / `updatedBy` attributes, never in the key.\n\n## Migrations\n\nRe-keying rows (for example the 2026-07 org rename) runs as a one-shot workflow that scans the table, rewrites `PK`, and is safe to re-run: rows already carrying the new key are skipped.\n"
+    },
+    "doc-auth": {
+      "content": "# Authentication and authorisation\n\nEvery handler starts with `principal = resolve_principal(event)`. The principal carries `tenant_id`, `sub`, and `role`.\n\n## API keys\n\nThe shared PwebAuthoriser accepts a Cognito JWT or a SystemDox API key. Keys MUST be presented as `Authorization: Bearer pweb_prod_key_...`; an `X-API-Key`-only request is rejected at the gateway with a 401 before the handler runs.\n\n## Roles\n\n`require_role(principal, 'editor')` on every mutating endpoint; `'admin'` for tenant settings. Read endpoints do not call it.\n"
+    },
+    "doc-adr-022": {
+      "content": "# ADR-022: Host the MCP server as a Lambda\n\n## Context\n\nThe MCP server (`packages/mcp-server`) can run locally over stdio, but evaluators will not install anything.\n\n## Decision\n\nDeploy `src/http.ts` as a Lambda behind `{tenant}.mcp.systemdox.com/mcp`, speaking stateless Streamable HTTP. Tool registration is shared with the stdio entry point via `createServer()` in `src/server.ts`, so a new tool is registered exactly once and both transports get it.\n\n## Consequences\n\nA new tool means: a `register*` function in `src/tools/`, a line in `createServer`, and a bump to the tool count asserted by `smoke-http.mjs`.\n"
+    },
+    "doc-docs-publishing": {
+      "content": "# Docs publishing pipeline\n\nPublished tenant docs are static Starlight sites served at `{tenant}.document.systemdox.com`.\n\nThe publish worker renders the tenant's documents with the template in `backend/layers/common/common/docs_template.py` and uploads them to S3 behind the docs-portal CloudFront distribution.\n\n**Bump `TEMPLATE_VERSION_BASE` whenever the template changes what published sites render** — `rebuild-all-docs` enqueues without `force`, so the worker's no-change guard silently skips every site otherwise.\n\nPublishing without a `PUBLISH_CONFIG` orphans the site from the reconcile loop; repairing one means restoring the manifest, the S3 prefix, the `_content/` tree, and the search embedding.\n"
+    },
+    "doc-backend-routes": {
+      "content": "# Adding a backend route\n\nA route exists in two places and both must agree:\n\n1. The handler's own router (`backend/functions/<name>/app.py`).\n2. The `Events` block of the function in `backend/template.yaml`.\n\nA route wired in the handler but missing from `template.yaml` produces a CORS preflight 403 from the console — the request never reaches Lambda. A guard test walks the handler's routes and asserts each one appears in the template.\n\nTwo functions declaring the same method+path fail the deploy at CloudFormation time, not at build time: `sam validate` will not catch it.\n"
+    },
+    "doc-frontend-services": {
+      "content": "# Frontend API services\n\nConsole API calls go through a typed service that extends `BaseApiService` (`apps/app/src/services/`). The base class injects the Cognito token, prefixes the `/systemdox` base path, and normalises errors into the `SYD` error-code space.\n\nDo not call `axios` directly from a component.\n"
+    },
+    "doc-header": {
+      "content": "# The cross-surface console header\n\nThe header is rendered twice: once by React (`apps/app`) and once by the Starlight docs template. The two must stay in visual lockstep — a source-level guard (`headerParity.test.ts`) and a Playwright visual spec compare them at four breakpoints and both themes.\n\nNote that in `apps/app`, Tailwind's `dark:` variant follows `prefers-color-scheme`, NOT a `.dark` class. Toggling a `.dark` class half-works and looks like a bug.\n"
+    },
+    "doc-broken": {
+      "content": "",
+      "error": "GitHub API returned 404"
+    }
+  },
+  "stack": [
+    { "id": "st-py", "name": "Python", "category": "language", "version": "3.11", "notes": "Lambda runtime, arm64" },
+    { "id": "st-ts", "name": "TypeScript", "category": "language", "version": "5.x" },
+    { "id": "st-react", "name": "React", "category": "frontend", "version": "19" },
+    { "id": "st-sam", "name": "AWS SAM", "category": "infrastructure" },
+    { "id": "st-ddb", "name": "DynamoDB", "category": "data", "notes": "single table, tenant-partitioned" }
+  ],
+  "rules": [
+    { "id": "ru-1", "text": "Use resolve_principal(event) for identity in every handler.", "category": "backend", "createdAt": "2026-06-01T00:00:00Z" },
+    { "id": "ru-2", "text": "Type hints on every Python function.", "category": "backend", "createdAt": "2026-06-01T00:00:00Z" },
+    { "id": "ru-3", "text": "Functional React components; CVA variants for shared UI.", "category": "frontend", "createdAt": "2026-06-01T00:00:00Z" },
+    { "id": "ru-4", "text": "Specs use RFC 2119 keywords and Given/When/Then scenarios.", "category": "process", "createdAt": "2026-06-01T00:00:00Z" }
+  ]
+}

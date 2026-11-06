@@ -1,0 +1,76 @@
+{
+  "name": "@systemdox/mcp-server",
+  "version": "0.1.0",
+  "mcpName": "io.github.puglieseweb/systemdox",
+  "type": "module",
+  "description": "Give AI coding agents your architecture context over MCP — checks, specs, ADRs, project rules, and docs from SystemDox, delivered at write time",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "systemdox-mcp-server": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./http": {
+      "import": "./dist/http.js",
+      "types": "./dist/http.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "dev": "tsup --watch",
+    "type-check": "tsc --noEmit",
+    "test": "tsup && node --test",
+    "test:http": "tsup && node smoke-http.mjs",
+    "eval": "tsup && node eval/run.mjs",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "pnpm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puglieseweb/systemdox-mcp-server.git"
+  },
+  "homepage": "https://www.systemdox.com",
+  "bugs": {
+    "url": "https://github.com/puglieseweb/systemdox-mcp-server/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "systemdox",
+    "ai",
+    "claude",
+    "claude-code",
+    "cursor",
+    "context",
+    "architecture",
+    "adr",
+    "checks",
+    "specs",
+    "governance"
+  ],
+  "author": "Emanuele Pugliese",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "esbuild": "^0.25.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.2"
+  }
+}
