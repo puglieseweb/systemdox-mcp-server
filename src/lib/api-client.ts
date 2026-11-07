@@ -44,6 +44,35 @@ export class SystemDoxApiError extends Error {
   }
 }
 
+/** One answer of the REST API, with the `code` of a refusal that named one. */
+export type ApiAnswer = Parameters<NonNullable<ServerConfig["onAnswer"]>>[0];
+
+/**
+ * A path as a server might read it: the query left off, what a URL parser drops
+ * taken out, and the escapes of a dot, a slash, a backslash, a percent and those
+ * dropped characters undone until none is left, so `%252e` is seen as the dot it can
+ * become. A segment can then only hide a dot segment by being one.
+ */
+function unescapedPath(path: string): string {
+  let current = path.split(/[?#]/, 1)[0];
+  for (;;) {
+    // Dropped first, each round: a URL parser drops them before it reads an escape,
+    // so `%2<TAB>e` is `%2e` to it.
+    const next = current
+      .replace(/[\t\n\r]/g, "")
+      .replace(/%(?:2e|2f|5c|25|09|0a|0d)/gi, (escape) => decodeURIComponent(escape));
+    if (next === current) return current;
+    current = next;
+  }
+}
+
+/** A dot segment in a path is a way out of the route it was built for. */
+function walksThePath(path: string): boolean {
+  return unescapedPath(path)
+    .split(/[/\\]/)
+    .some((segment) => segment === "." || segment === "..");
+}
+
 const TEAM_SETUP = "/v1/team-setup";
 const seg = (s: string | number) => encodeURIComponent(String(s));
 
@@ -93,7 +122,7 @@ export class SystemDoxApiClient {
     body: unknown
   ): Promise<T> {
     const url = this.buildUrl(path);
-    const res = await fetch(url, {
+    const res = await this.call(url, {
       method,
       headers: {
         // The API Gateway authorizer only reads the Authorization header;
@@ -159,7 +188,7 @@ export class SystemDoxApiClient {
     workspace: string,
     version: number | "latest"
   ): Promise<{ bytes: Buffer; sha256: string | null }> {
-    const res = await fetch(
+    const res = await this.call(
       this.buildUrl(`${TEAM_SETUP}/${seg(workspace)}/plugin/versions/${seg(version)}/zip`),
       {
         headers: {
@@ -259,6 +288,12 @@ export class SystemDoxApiClient {
     // when path starts with "/", so join the strings explicitly.
     const base = this.config.apiUrl.replace(/\/+$/, "");
     const url = new URL(`${base}${path.startsWith("/") ? "" : "/"}${path}`);
+    // The key travels on this request. An id a caller chose must not carry it to
+    // another route of the same domain, which serves every product's API.
+    const { origin, pathname } = new URL(base);
+    if (walksThePath(path) || url.origin !== origin || !url.pathname.startsWith(`${pathname.replace(/\/+$/, "")}/`)) {
+      throw new Error("Refused: this id leaves the API's own path.");
+    }
     if (params) {
       for (const [key, value] of Object.entries(params)) {
         url.searchParams.set(key, value);
@@ -273,7 +308,7 @@ export class SystemDoxApiClient {
     signal?: AbortSignal
   ): Promise<Response> {
     const url = this.buildUrl(path, params);
-    return fetch(url, {
+    return this.call(url, {
       headers: {
         Authorization: `Bearer ${this.config.apiKey}`,
         "X-API-Key": this.config.apiKey,
@@ -281,5 +316,16 @@ export class SystemDoxApiClient {
       },
       signal,
     });
+  }
+
+  /** Every call of this client, so `onAnswer` hears each answer. */
+  private async call(url: URL, init: RequestInit): Promise<Response> {
+    const res = await fetch(url, init);
+    const { onAnswer } = this.config;
+    if (onAnswer) {
+      const refused = res.ok ? undefined : new SystemDoxApiError(res.status, await res.clone().text());
+      onAnswer({ status: res.status, code: refused?.code });
+    }
+    return res;
   }
 }

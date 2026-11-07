@@ -57,7 +57,7 @@ export function registerGetSpecs(
     async ({ draft_id, status, search }) => {
       if (draft_id) {
         const spec = await apiClient.get<SpecDetail>(
-          `/v1/specs/${draft_id}`
+          `/v1/specs/${encodeURIComponent(draft_id)}`
         );
 
         const sections = [`# ${spec.name}\n\n**Status:** ${spec.status}`];

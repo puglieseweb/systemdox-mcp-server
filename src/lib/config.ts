@@ -3,6 +3,9 @@ export interface ServerConfig {
   apiUrl: string;
   cacheTtlMs: number;
   defaultOrg: string | undefined;
+  /** Hears every answer of the REST API, because a tool turns a refusal into a
+   * tool error and session-brief.ts hides it (ADR-229). */
+  onAnswer?: (answer: { status: number; code: string | undefined }) => void;
 }
 
 export const API_URL_DEFAULT = "https://api.puglieseweb.com/systemdox";

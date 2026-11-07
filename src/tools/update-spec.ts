@@ -47,8 +47,9 @@ export function registerUpdateSpec(
       },
     },
     async ({ draft_id, section, content, requirement_name }) => {
+      const specPath = `/v1/specs/${encodeURIComponent(draft_id)}`;
       // Fetch current spec to check status
-      const spec = await apiClient.get<SpecDetail>(`/v1/specs/${draft_id}`);
+      const spec = await apiClient.get<SpecDetail>(specPath);
 
       if (spec.status !== "draft") {
         return {
@@ -77,9 +78,9 @@ export function registerUpdateSpec(
         body.requirements = [...existing, newReq];
       }
 
-      await apiClient.put(`/v1/specs/${draft_id}`, body);
+      await apiClient.put(specPath, body);
 
-      apiClient.invalidateCache(`/v1/specs/${draft_id}`);
+      apiClient.invalidateCache(specPath);
       apiClient.invalidateCache("/v1/specs");
 
       return {

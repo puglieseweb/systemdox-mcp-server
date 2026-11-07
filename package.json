@@ -21,6 +21,11 @@
   },
   "files": [
     "dist",
+    "!dist/oauth.*",
+    "!dist/connect.*",
+    "!dist/lib/aws-deps.*",
+    "!dist/lib/connection-store.*",
+    "!dist/lib/oauth-*",
     "README.md"
   ],
   "scripts": {
@@ -68,6 +73,10 @@
     "zod": "^3.25.67"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "3.1159.0",
+    "@aws-sdk/client-kms": "3.1159.0",
+    "@aws-sdk/client-secrets-manager": "3.1159.0",
+    "@aws-sdk/lib-dynamodb": "3.1159.0",
     "@types/node": "^26.0.1",
     "esbuild": "^0.25.0",
     "tsup": "^8.5.1",

@@ -1839,7 +1839,7 @@ scenario("TSU-M-35", () =>
 
 test("the package never ships the shared examples", async () => {
   const pkg = JSON.parse(await readFile(join(HERE, "..", "package.json"), "utf8"));
-  assert.deepEqual(pkg.files, ["dist", "README.md"]);
+  assert.deepEqual(pkg.files.filter((entry) => !entry.startsWith("!")), ["dist", "README.md"]);
   assert.ok(!(await readdir(join(HERE, "..", "dist"))).includes("person-values.json"));
 });
 

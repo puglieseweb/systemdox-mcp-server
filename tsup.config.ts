@@ -21,6 +21,9 @@ export default defineConfig({
     "src/index.ts",
     "src/cli.ts",
     "src/http.ts",
+    // The Lambda entry points of ADR-229, which the scenarios drive as built.
+    "src/oauth.ts",
+    "src/connect.ts",
     "src/lib/context-builder.ts",
     "src/lib/api-client.ts",
     // Entry point so the empty-state config-link unit tests can drive it
@@ -68,6 +71,9 @@ export default defineConfig({
     // which the tests drive in a temporary HOME.
     "src/setup-mcp.ts",
   ],
+  // Left out of dist: the published package does not depend on the AWS SDK, and
+  // leaves these two entry points out. SAM bundles the SDK into the Lambdas from src.
+  external: [/^@aws-sdk\//],
   format: ["esm"],
   target: "node22",
   outDir: "dist",

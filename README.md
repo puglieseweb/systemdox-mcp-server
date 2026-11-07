@@ -25,8 +25,10 @@ MCP-compatible tool read that context — and write decisions back.
 
 1. SystemDox is in private preview. [Request early access](https://www.systemdox.com)
    to get a workspace.
-2. Connect a GitHub repository and generate an API key (workspace settings).
-3. Add the server to your tool — hosted (Option A) or local (Option B) below.
+2. Connect a GitHub repository.
+3. Paste `https://<your-workspace>.mcp.systemdox.com/connect` into Claude and
+   sign in, or generate an API key (workspace settings) and add the server to
+   your tool — hosted (Option A) or local (Option B) below.
 
 Docs: [MCP setup guide](https://www.systemdox.com/guides/mcp-setup) ·
 [Documentation standard](https://www.systemdox.com/guides/documentation-standard) ·
@@ -34,9 +36,27 @@ Docs: [MCP setup guide](https://www.systemdox.com/guides/mcp-setup) ·
 
 ---
 
-There are two ways to run it. Both authenticate with a SystemDox API key
-(generate one on your SystemDox settings page) and act strictly as the caller —
-every tool call is scoped to that key's tenant.
+## Connect by signing in
+
+Your workspace has its own address. Paste it into Claude's Settings → Connectors,
+or run:
+
+```bash
+claude mcp add --transport http systemdox https://<your-workspace>.mcp.systemdox.com/connect
+```
+
+Your browser opens SystemDox. Sign in with your second factor and approve. It only
+reads unless you choose to allow writes. Claude holds a token for an hour, renewed
+for you, and the API key behind the connection stays with SystemDox. Only an owner
+or admin of the workspace can connect this way for now, and an account that signs
+in only with Google or Apple cannot.
+
+## With an API key
+
+There are two more ways to run it, for scripts, CI and other tools. Both
+authenticate with a SystemDox API key (generate one on your SystemDox settings
+page) and act strictly as the caller — every tool call is scoped to that key's
+tenant.
 
 ## Option A — Hosted endpoint (no install)
 

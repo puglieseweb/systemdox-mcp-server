@@ -62,7 +62,7 @@ export function registerReportDecision(
         `## Consequences\n\n${consequences}` +
         relatedSection;
 
-      await apiClient.put(`/v1/specs/${created.draftId}`, {
+      await apiClient.put(`/v1/specs/${encodeURIComponent(created.draftId)}`, {
         proposalContent: adrContent,
       });
 

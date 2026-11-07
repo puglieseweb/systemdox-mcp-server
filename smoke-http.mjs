@@ -3,6 +3,7 @@
 // tool catalogue — without any network calls (only tool *invocation* would hit the
 // REST API, which these cases avoid). Build first (`pnpm build`), then `node smoke-http.mjs`.
 import { handler } from "./dist/http.js";
+import { handler as connectHandler } from "./dist/connect.js";
 
 function event(overrides = {}) {
   return {
@@ -105,6 +106,28 @@ check("missing Content-Type 200 (415 regression)", r7.statusCode === 200, `got $
 // 8. Response carries only allow-listed headers (no hop-by-hop leakage)
 const rk = Object.keys(r1.headers).map((k) => k.toLowerCase());
 check("response header allowlist", rk.every((k) => k === "content-type" || k === "mcp-session-id"), `headers: ${rk.join(",")}`);
+
+// 9. POST /connect (ADR-229): sign-in starts here. None of these reach AWS: a
+//    request with no token stops before the first read.
+function connectEvent(overrides = {}) {
+  return { ...event({ path: "/connect", resource: "/connect" }), requestContext: { domainName: "acme.mcp.systemdox.com" }, ...overrides };
+}
+const noToken = { Host: "acme.mcp.systemdox.com", "Content-Type": "application/json" };
+const c1 = await connectHandler(connectEvent({ headers: noToken }));
+check("/connect no token 401", c1.statusCode === 401, `got ${c1.statusCode}: ${c1.body?.slice(0, 200)}`);
+check(
+  "/connect names this host's metadata",
+  c1.headers["WWW-Authenticate"] ===
+    'Bearer resource_metadata="https://acme.mcp.systemdox.com/.well-known/oauth-protected-resource/connect"',
+  JSON.stringify(c1.headers)
+);
+// A key is not a token: /connect never takes what /mcp takes.
+const c2 = await connectHandler(connectEvent());
+check("/connect refuses an API key", c2.statusCode === 401, `got ${c2.statusCode}`);
+const c3 = await connectHandler(connectEvent({ httpMethod: "GET", body: null, headers: noToken }));
+check("/connect GET 405", c3.statusCode === 405, `got ${c3.statusCode}`);
+const c4 = await connectHandler(connectEvent({ headers: noToken, requestContext: { domainName: "api.puglieseweb.com" } }));
+check("/connect off an MCP host 404", c4.statusCode === 404, `got ${c4.statusCode}`);
 
 console.log(failed ? "\nSMOKE FAILED" : "\nSMOKE OK");
 process.exit(failed ? 1 : 0);

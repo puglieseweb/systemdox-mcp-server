@@ -27,6 +27,55 @@ declare const __MCP_SERVER_VERSION__: string;
 const SERVER_VERSION =
   typeof __MCP_SERVER_VERSION__ === "string" ? __MCP_SERVER_VERSION__ : "0.0.0-dev";
 
+/** What a connection's access offers (contract.md §7). `skills.ts` and
+ * `team-setup.ts` mix reads and writes, so each tool is named: one nobody has
+ * placed is on no connection. */
+const READ_TOOLS = [
+  "get_context",
+  "get_checks",
+  "get_guardrails",
+  "get_project_rules",
+  "get_prompt_templates",
+  "get_specs",
+  "get_docs",
+  "get_tech_stack",
+  "get_planning_context",
+  "get_plan_board",
+  "get_change",
+  "get_team_setup",
+  "get_document_links",
+  "trace_document_path",
+  "get_graph_stats",
+  "list_skills",
+  "install_skill",
+  "resolve_person",
+];
+const WRITE_TOOLS = [
+  "create_check",
+  "create_guardrail",
+  "create_project_rule",
+  "create_prompt_template",
+  "update_spec",
+  "report_decision",
+  "publish_skill",
+  "publish_setup_part",
+];
+
+export type ConnectionAccess = "read" | "write";
+
+/** The server as the tools see it: registering one that is not offered does nothing. */
+function offering(server: McpServer, access: ConnectionAccess): McpServer {
+  const offered = new Set(access === "write" ? [...READ_TOOLS, ...WRITE_TOOLS] : READ_TOOLS);
+  return new Proxy(server, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target) as unknown;
+      if (property !== "registerTool") return typeof value === "function" ? value.bind(target) : value;
+      return (name: string, ...rest: unknown[]) =>
+        offered.has(name) ? (target.registerTool as (...args: unknown[]) => unknown)(name, ...rest) : undefined;
+    },
+  });
+}
+
 export interface ServerOptions {
   /** True only on the user's own computer (stdio): the skill tools may read
    * and write the skill folder there. The hosted server never touches a disk
@@ -36,6 +85,9 @@ export interface ServerOptions {
   instructions?: string;
   /** Why the local server has no key, when it has none. */
   keyProblem?: string;
+  /** A connection's access (ADR-229): `tools/list` holds only these. Left out,
+   * every tool is offered, as on `/mcp` and the local server. */
+  access?: ConnectionAccess;
 }
 
 /**
@@ -45,15 +97,16 @@ export interface ServerOptions {
  */
 export function createServer(
   apiClient: SystemDoxApiClient,
-  { localFiles = false, instructions, keyProblem }: ServerOptions = {}
+  { localFiles = false, instructions, keyProblem, access }: ServerOptions = {}
 ): McpServer {
-  const server = new McpServer(
+  const mcpServer = new McpServer(
     {
       name: "systemdox-mcp-server",
       version: SERVER_VERSION,
     },
     instructions ? { instructions } : undefined
   );
+  const server = access ? offering(mcpServer, access) : mcpServer;
 
   // Read tools
   registerGetGuardrails(server, apiClient);
@@ -83,5 +136,5 @@ export function createServer(
   // only) sync a team memory (ADR-217)
   registerTeamSetupTools(server, apiClient, { localFiles });
 
-  return server;
+  return mcpServer;
 }
