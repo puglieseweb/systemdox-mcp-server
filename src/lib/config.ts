@@ -28,7 +28,7 @@ export function requireHttpsApiUrl(apiUrl: string): string {
     parsed = new URL(apiUrl);
   } catch {
     throw new Error(
-      `SYSTEMDOX_API_URL is not a valid URL: ${apiUrl}`
+      "SYSTEMDOX_API_URL, or the API URL given to setup, is not a valid URL. It is not repeated here, in case a key was pasted by mistake."
     );
   }
   if (parsed.protocol !== "https:") {

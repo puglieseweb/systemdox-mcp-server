@@ -39,7 +39,7 @@ export interface McpSetupOptions {
   /** The folder whose project configs are offered (default: the current folder). */
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  /** Checks the key against the API (default: `GET /v1/health`). */
+  /** Checks the key against the API (default: `GET /v1/team-setup`, which needs one). */
   validateKey?: (apiKey: string, apiUrl: string) => Promise<boolean>;
   /** Names the key's workspace (default: `GET /team-setup` with the key). */
   client?: (apiKey: string, apiUrl: string) => { getOwnTeamSetup(): Promise<TeamSetup> };
@@ -111,9 +111,11 @@ async function chooseKey(opts: McpSetupOptions): Promise<{ apiKey: string; sourc
 /** A `${NAME}` reference to the member's own environment: not a key. */
 const isReference = (value: unknown) => typeof value === "string" && /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value);
 
+/** Whether SystemDox accepts the key. `/v1/team-setup` needs a key and every
+ * key may read it; `/v1/health` is public, so it answers for any key at all. */
 async function validateApiKey(apiKey: string, apiUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(`${apiUrl.replace(/\/+$/, "")}/v1/health`, {
+    const res = await fetch(`${apiUrl.replace(/\/+$/, "")}/v1/team-setup`, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "X-API-Key": apiKey,
@@ -213,7 +215,12 @@ async function keyWorkspace(opts: McpSetupOptions, apiKey: string, apiUrl: strin
   }
   const fromEnv = (opts.env ?? process.env).SYSTEMDOX_WORKSPACE;
   if (isWorkspace(fromEnv)) return fromEnv;
-  const typed = (await opts.ask("  Your workspace (acme in acme.systemdox.com): ")).trim().toLowerCase();
+  // The whole address is a fair answer to a question that shows one.
+  const typed = (await opts.ask("  Your workspace (acme in acme.systemdox.com): "))
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\.([a-z0-9-]+\.)*systemdox\.com(\/.*)?$/, "");
   return isWorkspace(typed) ? typed : undefined;
 }
 
@@ -242,6 +249,7 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
     requireHttpsApiUrl(apiUrl);
   } catch (e) {
     err(`\n  Error: ${(e as Error).message}\n`);
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(apiUrl)) err("  A new key goes at the first question; Enter at the API URL takes the default.\n");
     return { code: 1 };
   }
 

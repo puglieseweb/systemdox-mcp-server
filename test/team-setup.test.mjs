@@ -2563,6 +2563,79 @@ test("setup's key check: what the member accepted of the memory stays accepted t
   )
 );
 
+// ── setup checks the key for real, and never repeats one ─────────────────
+
+/** setup's first step with the real key check against a fake SystemDox whose
+ * health route, like the real one, answers for any key. */
+async function realCheck(home, answers, goodKeys) {
+  const asked = [];
+  globalThis.fetch = async (url, init) => {
+    asked.push(String(url));
+    if (String(url).endsWith("/v1/health")) return new Response("{}", { status: 200 });
+    const key = init.headers.Authorization.replace("Bearer ", "");
+    return new Response("{}", { status: goodKeys.includes(key) ? 200 : 401 });
+  };
+  const lines = [];
+  const t = terminal(...answers);
+  const result = await setupMcpServer({
+    out: (l) => lines.push(l),
+    err: (l) => lines.push(l),
+    ask: t.ask,
+    cwd: join(home, "checkout"),
+    env: {},
+    client: () => ({ getOwnTeamSetup: async () => ({ workspace: "acme" }) }),
+  });
+  return { ...result, text: lines.join("\n"), asked: t.asked, urls: asked };
+}
+
+test("setup's key check: a revoked stored key is not called valid, and one new key replaces it", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_OTHER);
+    const r = await realCheck(home, ["", "", KEY_ACME, "all"], [KEY_ACME]);
+    assert.equal(r.code, 0, r.text);
+    assert.match(r.asked[2], /did not work/, "the revoked key is caught here");
+    assert.equal(r.apiKey, KEY_ACME);
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
+    assert.ok(r.urls.every((u) => u.endsWith("/v1/team-setup")), `only a route that needs a key: ${r.urls}`);
+  })
+);
+
+test("setup's key check: a key SystemDox refuses stops a new computer's setup, and nothing is stored", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    const r = await realCheck(home, [KEY_OTHER, ""], [KEY_ACME]);
+    assert.equal(r.code, 1, r.text);
+    assert.match(r.text, /Invalid API key/);
+    assert.ok(!existsSync(credentialsPath()));
+  })
+);
+
+test("setup: a key pasted at the API URL question is never repeated, and the error says where it goes", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_ACME);
+    const pasted = "pweb_prod" + "_key_" + "01ABCDEF_notreal";
+    const r = await keyStep(home, ["", pasted]);
+    assert.equal(r.code, 1, r.text);
+    assert.ok(!r.text.includes(pasted) && !r.text.includes("notreal"), r.text);
+    assert.match(r.text, /A new key goes at the first question/);
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
+  })
+);
+
+test("setup: the workspace question takes the whole address as well as the name", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    const down = { getOwnTeamSetup: async () => { throw apiError(503, "SYD-X500"); } };
+    for (const typed of ["acme.systemdox.com", "https://acme.build.systemdox.com/settings", "ACME"]) {
+      const r = await mcpStep(down, home, { answers: [KEY_ACME, "", typed, "1"] });
+      assert.equal(r.code, 0, `${typed}: ${r.text}`);
+      assert.equal(r.workspace, "acme", typed);
+    }
+  })
+);
+
 test("team-setup.feature: a @proposed scenario has no test yet, and a @built one has one", () => {
   for (const s of SCENARIOS) {
     if (s.tags.includes("@built")) assert.ok(bound.has(s.id), `${s.id} is @built but no test binds it`);
