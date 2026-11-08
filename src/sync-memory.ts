@@ -105,7 +105,11 @@ export interface SyncSummary {
   deleted: number;
   /** The `.local-<date>.md` copies this run wrote. */
   conflictCopies: string[];
-  /** The files skipped this run (waiting for the member, or refused). */
+  /**
+   * The files held back for the member at a terminal (a value nobody answered
+   * for, a value to rewrite, the vault not answering), sorted. A secret or a
+   * refusal is not here: it is in the log.
+   */
   waiting: string[];
 }
 
@@ -863,10 +867,25 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The lines the hook prints for one project (contract.md "--hook"): never a value. */
+/** How many waiting files the hook's line names before it says "and n more". */
+export const HOOK_WAITING_NAMED = 5;
+
+/** The first names, then "and n more" (contract.md "--hook", item 30). */
+function firstNames(names: string[]): string {
+  const shown = names.slice(0, HOOK_WAITING_NAMED).join(", ");
+  const rest = names.length - HOOK_WAITING_NAMED;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
+/**
+ * The lines the hook prints for one project (contract.md "--hook"): files and
+ * counts, never a value. A run that did not finish says only that the next
+ * session tries again: a push refused twice leaves the merge in the folder,
+ * so the files are not always as they were.
+ */
 export function hookLines(ws: string, project: string, folder: string, s: SyncSummary): string[] {
   if (s.outcome !== "synced") {
-    return [`Team memory ${ws}/${project}: not synced (${s.reason ?? "it did not finish"}); your files are unchanged and the next session tries again.`];
+    return [`Team memory ${ws}/${project}: not synced (${s.reason ?? "it did not finish"}); the next session tries again.`];
   }
   const lines = [`Team memory ${ws}/${project}: version ${s.version}, ${s.pulled} pulled, ${s.pushed} pushed, ${s.deleted} deleted.`];
   if (s.conflictCopies.length) {
@@ -874,7 +893,8 @@ export function hookLines(ws: string, project: string, folder: string, s: SyncSu
   }
   if (s.waiting.length) {
     lines.push(
-      `  ${plural(s.waiting.length, "file waits", "files wait")} for you: run \`${SYNC_MEMORY_COMMAND} --project ${project}\` in your terminal.`
+      `  ${plural(s.waiting.length, "file waits", "files wait")} for you (${firstNames(s.waiting)}): ` +
+        `run \`${SYNC_MEMORY_COMMAND} --project ${project}\` in your terminal.`
     );
   }
   return lines;

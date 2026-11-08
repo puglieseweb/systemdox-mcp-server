@@ -289,7 +289,7 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
     When another session's hook runs
     Then it says a sync is already running and changes nothing
 
-  @proposed
+  @built
   Scenario: TSU-M-41 A hook run's lines name conflict copies and files waiting for the member, never a value
     Given "a.md" changed on both sides and "c.md" still holds a phone number nobody answered for
     When the hook runs at the start of a session
@@ -319,14 +319,14 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
 
   # The hook run's safeguards (proposal item 30)
 
-  @proposed
+  @built
   Scenario: TSU-M-45 A hook run with a key for another workspace syncs nothing there, and says so
     Given the member's key is for the workspace "globex" and the team plugin of "acme" runs the hook
     When the hook runs at the start of a session
     Then nothing is synced for "acme" or "globex"
     And one line says the memory was not synced because the key is for another workspace
 
-  @proposed
+  @built
   Scenario: TSU-M-46 A hook run never deletes the member's files when the team memory can no longer be read
     Given this computer synced "puglieseweb-ltd" before and the team memory can no longer be read
     When the hook runs at the start of a session

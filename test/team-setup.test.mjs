@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { crc32, deflateRawSync } from "node:zlib";
 import { SystemDoxApiClient, SystemDoxApiError } from "../dist/lib/api-client.js";
-import { runSyncMemory, syncMemory } from "../dist/sync-memory.js";
+import { hookLines, runSyncMemory, syncMemory } from "../dist/sync-memory.js";
 import { claudeMemoryFolder, memoryImports, parseSetupArgs, runTeamSetup, setJsonMember, withImportBlock } from "../dist/setup-team.js";
 import { setupMcpServer } from "../dist/setup-mcp.js";
 import { findPersonValues, findSecrets, normalise, rewriteHomePaths } from "../dist/lib/person-values.js";
@@ -1959,7 +1959,7 @@ scenario("TSU-M-39", () =>
     assert.ok(Date.now() - started < 20_000, "within its budget");
     assert.equal(r.code, 0, "it ends as a success");
     assert.deepEqual(r.out, [
-      "Team memory acme/notes: not synced (SystemDox could not be reached); your files are unchanged and the next session tries again.",
+      "Team memory acme/notes: not synced (SystemDox could not be reached); the next session tries again.",
     ]);
     assert.deepEqual(await texts(dir), before);
 
@@ -1968,7 +1968,7 @@ scenario("TSU-M-39", () =>
     const r2 = await hook({ client: slow, budgetMs: 100 });
     assert.equal(r2.code, 0);
     assert.deepEqual(r2.out, [
-      "Team memory acme/notes: not synced (took too long); your files are unchanged and the next session tries again.",
+      "Team memory acme/notes: not synced (took too long); the next session tries again.",
     ]);
     assert.ok(!existsSync(syncLockPath("acme")), "the lock is released either way");
   })
@@ -1998,9 +1998,7 @@ scenario("TSU-M-40", () =>
   })
 );
 
-// TSU-M-41 stays @proposed until the brief amendment says whether the waiting
-// line names its files; until then this holds what the contract's line says.
-test("hook lines: a conflict copy and a waiting file are named and counted, and no value is printed or logged", () =>
+scenario("TSU-M-41", () =>
   withHome(async (home) => {
     await writeCredentials("acme", KEY_ACME);
     const v1 = { "a.md": mem("project", "A, as last synced") };
@@ -2016,7 +2014,7 @@ test("hook lines: a conflict copy and a waiting file are named and counted, and 
     assert.deepEqual(r.out, [
       "Team memory acme/notes: version 2, 0 pulled, 0 pushed, 0 deleted.",
       `  1 conflict copy to tidy in ${dir}: a.local-2026-11-01.md`,
-      "  1 file waits for you: run `npx -y @systemdox/mcp-server sync-memory --project notes` in your terminal.",
+      "  1 file waits for you (c.md): run `npx -y @systemdox/mcp-server sync-memory --project notes` in your terminal.",
     ]);
     assert.ok(!r.text.includes(PHONE) && !r.text.includes("900456"), "no phone number is printed");
     const log = await readFile(syncLogPath("acme"), "utf8");
@@ -2024,6 +2022,22 @@ test("hook lines: a conflict copy and a waiting file are named and counted, and 
     assert.equal(await readFile(join(dir, "a.local-2026-11-01.md"), "utf8"), mem("project", "A, changed here"));
   })
 );
+
+test("hook lines: the waiting line names the first five files, then how many more, and counts in the plural", () => {
+  const summary = (waiting) => ({ outcome: "synced", version: 4, pulled: 0, pushed: 0, deleted: 0, conflictCopies: [], waiting });
+  const run = "run `npx -y @systemdox/mcp-server sync-memory --project notes` in your terminal.";
+  const names = (n) => Array.from({ length: n }, (_, i) => `f${i + 1}.md`);
+  assert.equal(hookLines("acme", "notes", "/m", summary(names(2)))[1], `  2 files wait for you (f1.md, f2.md): ${run}`);
+  assert.equal(hookLines("acme", "notes", "/m", summary(names(5)))[1], `  5 files wait for you (f1.md, f2.md, f3.md, f4.md, f5.md): ${run}`);
+  assert.equal(hookLines("acme", "notes", "/m", summary(names(7)))[1], `  7 files wait for you (f1.md, f2.md, f3.md, f4.md, f5.md and 2 more): ${run}`);
+  assert.equal(
+    hookLines("acme", "notes", "/m", { ...summary([]), conflictCopies: ["a.local-2026-11-01.md", "b.local-2026-11-01.md"] })[1],
+    "  2 conflict copies to tidy in /m: a.local-2026-11-01.md, b.local-2026-11-01.md"
+  );
+  assert.deepEqual(hookLines("acme", "notes", "/m", { ...summary([]), outcome: "failed", reason: "took too long" }), [
+    "Team memory acme/notes: not synced (took too long); the next session tries again.",
+  ]);
+});
 
 scenario("TSU-M-42", () =>
   withHome((home, network) =>
@@ -2084,40 +2098,48 @@ scenario("TSU-M-44", () =>
   )
 );
 
-// ── The hook run's safety (the code-vs-contract review of the build) ───────
+// ── The hook run's safeguards (proposal item 30: TSU-M-45, TSU-M-46) ───────
 
-test("hook: a key for another workspace syncs nothing there, and says so", () =>
+scenario("TSU-M-45", () =>
   withHome(async (home) => {
     const v1 = { "a.md": mem("project", "A") };
     const team = fakeTeam({ files: v1 });
-    const other = { ...team.client, getOwnTeamSetup: async () => ({ workspace: "other", memory: [{ project: PROJECT, latestVersion: 1 }] }) };
+    // The member's key (SYSTEMDOX_API_KEY, say) is for "globex"; the plugin of "acme" runs the hook.
+    const globex = {
+      ...team.client,
+      getOwnTeamSetup: async () => {
+        team.calls.push(["getOwnTeamSetup"]);
+        return { workspace: "globex", memory: [{ project: PROJECT, latestVersion: 1 }] };
+      },
+    };
     await lastSynced(memoryDir(home), v1, 1);
     const before = await tree(home);
-    const r = await hook({ client: other });
+    const r = await hook({ client: globex });
     assert.equal(r.code, 0);
-    assert.deepEqual(r.out, [
-      "Team memory acme/notes: not synced (the key is for another workspace); your files are unchanged and the next session tries again.",
-    ]);
-    assert.deepEqual(team.named("pushMemoryVersion"), []);
-    assert.ok(!existsSync(join(home, ".claude", "systemdox", "other")), "nothing is written for the other workspace");
+    assert.deepEqual(team.calls, [["getOwnTeamSetup"]], "nothing is pulled or pushed for acme or globex");
+    assert.ok(!existsSync(join(home, ".claude", "systemdox", "globex")), "nothing is written for globex");
     const after = await tree(home);
     for (const path of Object.keys(before)) assert.equal(after[path], before[path], `${path} did not change`);
+    assert.deepEqual(r.out, [
+      "Team memory acme/notes: not synced (the key is for another workspace); the next session tries again.",
+    ]);
   })
 );
 
-test("hook: a project the team no longer serves is left as it is, never deleted", () =>
+scenario("TSU-M-46", () =>
   withHome(async (home) => {
     const v1 = { "a.md": mem("project", "A"), "b.md": mem("project", "B") };
-    const team = fakeTeam(); // no version: the project answers 404
+    const team = fakeTeam(); // no version: the project answers 404, deleted or no longer readable by the key
     const dir = memoryDir(home);
     await lastSynced(dir, v1, 3);
     const r = await hook({ client: team.client });
     assert.equal(r.code, 0);
-    assert.deepEqual(r.out, [
-      "Team memory acme/notes: not synced (the team memory could not be read); your files are unchanged and the next session tries again.",
-    ]);
-    assert.deepEqual(await texts(dir), v1, "every file is still there");
+    assert.deepEqual(await texts(dir), v1, "every file in the member's folder is still there");
     assert.equal((await readState("acme")).memory[PROJECT].version, 3, "the base is unchanged");
+    assert.deepEqual(team.named("pushMemoryVersion"), [], "nothing is pushed");
+    assert.deepEqual(r.out, [
+      "Team memory acme/notes: not synced (the team memory could not be read); the next session tries again.",
+    ]);
   })
 );
 

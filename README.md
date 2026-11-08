@@ -301,12 +301,16 @@ npx -y @systemdox/mcp-server sync-memory --hook <workspace>
 - It syncs only the projects this computer synced before (the first sync is
   yours, in your terminal), asks nothing and rewrites nothing.
 - It prints one line per project, which Claude Code adds to the session, plus a
-  line naming any conflict copy to tidy and one for files waiting for you, with
-  the command to run. A value is never printed. The full report is appended to
+  line naming any conflict copy to tidy and one naming the files waiting for you
+  (the first five, then how many more), with the command to run. A value is
+  never printed. The full report is appended to
   `~/.claude/systemdox/<workspace>/sync-memory.log`.
-- One run at a time per workspace (`sync.lock`), a 20-second budget, and exit
-  `0` always: offline or slow, it says the memory was not synced and the next
-  session tries again.
+- One run at a time per workspace (`sync.lock`), a 20-second budget counted from
+  the start of the process, and exit `0` always: offline or slow, it says the
+  memory was not synced and the next session tries again.
+- A key for another workspace, or a team memory SystemDox no longer serves,
+  syncs nothing and leaves the folder as it is. Every file is written whole
+  (a temporary file, then a rename).
 
 Claude Code runs two commands itself; you never type them:
 
