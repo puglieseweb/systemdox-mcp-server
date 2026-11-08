@@ -226,6 +226,16 @@ One command sets up your computer, and the same command updates it:
 npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]
 ```
 
+- **The key must be able to sync.** Create it in the console under Settings ›
+  API keys with **Developer** or **Architect** access on **All spaces**, with
+  **Allow changes** ticked. A key made with the defaults is a **Reader** key:
+  it reads the team setup, but SystemDox refuses its pushes (`SYD-A001`), so it
+  cannot sync a team memory.
+- **The workspace's first team memory needs a name.** With no team memory yet,
+  name it once with `--project <name>`. Without it, `setup` installs the plugin
+  and the instructions and sets up no memory. Later computers find the only
+  team memory by themselves, and with several they ask which is the checkout's.
+
 - It first writes the SystemDox MCP server into your AI tool's config, without
   your key: the key is stored once, in `~/.claude/systemdox/credentials.json`
   (readable by you alone), and a key an earlier `setup` wrote into that config
