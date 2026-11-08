@@ -255,13 +255,13 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
 
   # The memory reaches every computer (Amendment 3)
 
-  @proposed
+  @built
   Scenario: TSU-M-36 A memory whose type is written under metadata is shared like one whose type is at the top
     Given "a.md" says its type under "metadata" and "b.md" says it at the top
     When the member syncs
     Then the team has both files
 
-  @proposed
+  @built
   Scenario: TSU-M-37 A hook run syncs every team memory this computer has synced before, and says so in one line
     Given this computer synced "puglieseweb-ltd" before and the team changed "b.md" since
     When the hook runs at the start of a session
@@ -269,21 +269,21 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
     And one line names the project, its version and what was pulled and pushed
     And the full report is in the workspace's sync log
 
-  @proposed
+  @built
   Scenario: TSU-M-38 A hook run never makes a first sync, and prints nothing when there is nothing to sync
     Given this computer has never synced "puglieseweb-ltd"
     When the hook runs at the start of a session
     Then nothing is pulled, pushed or written
     And nothing is printed
 
-  @proposed
+  @built
   Scenario: TSU-M-39 A hook run never holds up a session: when SystemDox cannot be reached, one line says so
     Given SystemDox cannot be reached
     When the hook runs at the start of a session
     Then it ends within its budget, saying the memory was not synced and the next session will try again
     And it ends as a success
 
-  @proposed
+  @built
   Scenario: TSU-M-40 Two hook runs at once: the second leaves the sync to the first
     Given a hook run is syncing "puglieseweb-ltd"
     When another session's hook runs
@@ -296,7 +296,7 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
     Then the lines under the project's line name "a.local-<today>.md" to tidy and "c.md" as waiting, with the command for the member to run
     And no phone number is printed
 
-  @proposed
+  @built
   Scenario: TSU-M-42 Setup imports the memory Claude Code already kept for the checkout, and leaves that folder as it was
     Given Claude Code kept 5 memories for this checkout in its own folder and this computer never synced the project
     When the member runs setup and answers yes
@@ -304,15 +304,31 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
     And the team memory holds the 5 files
     And that folder is unchanged
 
-  @proposed
+  @built
   Scenario: TSU-M-43 Setup imports a folder the member names
     Given the member names the D: copy with --import
     When the member runs setup and answers yes
     Then the D: copy's files are in the team memory
     And the D: copy is unchanged
 
-  @proposed
+  @built
   Scenario: TSU-M-44 Setup imports nothing on a later run
     Given this computer synced the project before
     When the member runs setup again
     Then nothing is imported and no import is shown
+
+  # The hook run's safeguards (proposal item 30)
+
+  @proposed
+  Scenario: TSU-M-45 A hook run with a key for another workspace syncs nothing there, and says so
+    Given the member's key is for the workspace "globex" and the team plugin of "acme" runs the hook
+    When the hook runs at the start of a session
+    Then nothing is synced for "acme" or "globex"
+    And one line says the memory was not synced because the key is for another workspace
+
+  @proposed
+  Scenario: TSU-M-46 A hook run never deletes the member's files when the team memory can no longer be read
+    Given this computer synced "puglieseweb-ltd" before and the team memory can no longer be read
+    When the hook runs at the start of a session
+    Then every file in the member's folder is still there
+    And one line says the memory was not synced and the next session will try again

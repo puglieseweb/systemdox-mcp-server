@@ -65,25 +65,33 @@ if (command === "setup") {
     )
     .then((code) => process.exit(code));
 } else if (command === "sync-memory") {
-  // ADR-217 §2.3 with Amendment 2: the team memory's sync. Questions about a
-  // person's details are asked only of a person at a terminal.
-  const terminal = !!process.stdin.isTTY && !!process.stdout.isTTY;
+  // ADR-217 §2.3 with Amendments 2 and 3: the team memory's sync. Questions
+  // about a person's details are asked only of a person at a terminal. With
+  // --hook (the team plugin's run) the exit code is 0 whatever happens, and the
+  // budget counts from this process's start.
+  const hook = args.includes("--hook");
+  const terminal = !hook && !!process.stdin.isTTY && !!process.stdout.isTTY;
   import("./sync-memory.js")
     .then(({ runSyncMemory }) =>
       runSyncMemory(args.slice(1), {
         out: console.log,
         err: console.error,
         ask: terminal ? (question: string) => prompt(question) : undefined,
+        startedAt: performance.timeOrigin,
       })
     )
-    .then((code) => process.exit(code));
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(`  Error: ${(err as Error).message}`);
+      process.exit(hook ? 0 : 1);
+    });
 } else if (command === "--help" || command === "-h") {
   console.log(`
   SystemDox MCP Server
 
   Usage:
     systemdox-mcp-server          Start the MCP server (stdio transport)
-    systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--yes] [--overwrite]
+    systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]
                                   Configure the MCP server in your AI coding tool,
                                   then your team's setup: the team instructions,
                                   the plugin's marketplace and the project's team
@@ -100,10 +108,15 @@ if (command === "setup") {
                                   Print the header for your team's marketplace
                                   (Claude Code runs it)
     systemdox-mcp-server sync-memory [--project <name>] [--dir <folder>]
-                                  [--import <folder>] [--dry-run]
+                                  [--import <folder>]... [--dry-run]
                                   Sync a project's team memory with SystemDox
                                   (default folder:
                                   ~/.claude/systemdox/<workspace>/memory/<project>)
+    systemdox-mcp-server sync-memory --hook <workspace>
+                                  The run the team plugin makes at the start and
+                                  the end of a session: the memories this computer
+                                  synced before, one line each, never a question,
+                                  never a held-up session (Claude Code runs it)
     systemdox-mcp-server --help   Show this help message
 
   Environment variables:

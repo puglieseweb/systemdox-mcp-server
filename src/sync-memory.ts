@@ -1,8 +1,9 @@
 /**
  * `systemdox-mcp-server sync-memory [--project <name>] [--dir <folder>]
- * [--import <folder>] [--dry-run]`, and the core of the local MCP tool
- * `sync_memory` (ADR-217 §2.3 with Amendment 2,
- * specs/changes/team-setup/contract.md "sync-memory and the MCP tool
+ * [--import <folder>]... [--dry-run]`, the core of the local MCP tool
+ * `sync_memory`, and `sync-memory --hook <workspace>`, the run the team plugin
+ * makes at the start and the end of a session (ADR-217 §2.3 with Amendments 2
+ * and 3, specs/changes/team-setup/contract.md "sync-memory and the MCP tool
  * sync_memory").
  *
  * 1. Pull: the team's latest version (`getMemory`), the base (state.json; with
@@ -17,11 +18,15 @@
  *    state.json takes the new base only after the push succeeds.
  *
  * Exit codes: 0 synced; 1 usage, no key, or the API refused; 2 the push was
- * refused twice on a stale base.
+ * refused twice on a stale base. `--hook` always exits 0: it syncs only the
+ * projects this computer synced before, asks nothing, prints one line per
+ * project (and a line for conflict copies and one for waiting files), appends
+ * the full report to the workspace's sync-memory.log, holds sync.lock, keeps
+ * to a 20-second budget and never holds a session up.
  */
 
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { SystemDoxApiClient, type SystemDoxApiError } from "./lib/api-client.js";
 import {
@@ -44,10 +49,13 @@ import {
 } from "./lib/memory-sync.js";
 import { findPersonValues, findSecrets, HOME_PATH, normalise } from "./lib/person-values.js";
 import {
+  apiKeyFor,
   apiUrlFrom,
   isWorkspace,
   localApiKey,
   readState,
+  syncLockPath,
+  syncLogPath,
   updateState,
   workspaceDir,
   type CommandIo,
@@ -55,7 +63,12 @@ import {
 import type { FoundValue, ValueAnswer } from "./lib/team-setup-types.js";
 
 export const SYNC_MEMORY_USAGE =
-  "Usage: systemdox-mcp-server sync-memory [--project <name>] [--dir <folder>] [--import <folder>] [--dry-run]";
+  "Usage: systemdox-mcp-server sync-memory [--project <name>] [--dir <folder>] [--import <folder>]... [--dry-run]\n" +
+  "       systemdox-mcp-server sync-memory --hook <workspace>";
+/** The hook run's budget, lock staleness and log size (contract.md "--hook"). */
+export const HOOK_BUDGET_MS = 20_000;
+export const HOOK_LOCK_STALE_MS = 60_000;
+export const HOOK_LOG_MAX_BYTES = 1024 * 1024;
 export const SYNC_MEMORY_COMMAND = "npx -y @systemdox/mcp-server sync-memory";
 
 export type SyncClient = Pick<
@@ -74,8 +87,26 @@ export type SyncClient = Pick<
 export interface SyncMemoryArgs {
   project?: string;
   dir?: string;
-  importDir?: string;
+  /** Folders to import on this sync, in order (`--import`, repeatable). */
+  importDirs?: string[];
   dryRun: boolean;
+  /** `--hook <workspace>`: the run the team plugin makes. */
+  hook?: string;
+}
+
+/** What a sync came to, for the hook run's one line (never a value). */
+export interface SyncSummary {
+  outcome: "synced" | "moved-on" | "failed";
+  /** For `failed`: why, in a few words. */
+  reason?: string;
+  version: number;
+  pulled: number;
+  pushed: number;
+  deleted: number;
+  /** The `.local-<date>.md` copies this run wrote. */
+  conflictCopies: string[];
+  /** The files skipped this run (waiting for the member, or refused). */
+  waiting: string[];
 }
 
 export interface SyncMemoryOptions extends SyncMemoryArgs {
@@ -86,10 +117,51 @@ export interface SyncMemoryOptions extends SyncMemoryArgs {
    * nothing is asked and nothing is rewritten. */
   ask?: (question: string) => Promise<string>;
   now?: () => Date;
+  /** Told what the sync came to, once, at its end. */
+  summary?: (summary: SyncSummary) => void;
+  /** The workspace the run is for (`--hook <workspace>`): a key for another one syncs nothing. */
+  workspace?: string;
+  /** Epoch ms: past it, nothing more is written or sent (the hook's budget). */
+  deadline?: number;
+  /** A hook run: a project the team no longer serves is left as it is. */
+  unattended?: boolean;
 }
 
 /** A usage error or a refusal: exit 1 with the message. */
 class SyncFailed extends Error {}
+
+/** A run that stopped on purpose, with the reason the hook's line gives. */
+class SyncStopped extends Error {
+  constructor(readonly reason: string, message: string) {
+    super(message);
+  }
+}
+
+/** The reason a failed run gives, in a few words; never a value. */
+function failureReason(e: unknown): string {
+  if (e instanceof SyncStopped) return e.reason;
+  const { status, code } = refusal(e);
+  if (status !== undefined) return code ? `SystemDox refused it, ${code}` : "SystemDox refused it";
+  const err = e as NodeJS.ErrnoException & { cause?: { code?: string } };
+  const net = err?.cause?.code ?? err?.code ?? "";
+  if (e instanceof TypeError || /^(ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|UND_ERR)/.test(net)) {
+    return "SystemDox could not be reached";
+  }
+  return "it could not finish";
+}
+
+/** Write a file whole or not at all: a temporary file beside it, then a rename. */
+async function writeWhole(path: string, text: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await writeFile(tmp, text, "utf8");
+    await rename(tmp, path);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
+}
 
 /** A refused API call's status and SYD code. Read from the error rather than
  * by `instanceof`: each entry point bundles its own copy of the client, so
@@ -101,19 +173,25 @@ function refusal(e: unknown): { status?: number; code?: string } {
 }
 
 export function parseSyncMemoryArgs(argv: string[]): SyncMemoryArgs {
-  const args: SyncMemoryArgs = { dryRun: false };
+  const args: SyncMemoryArgs = { dryRun: false, importDirs: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") args.dryRun = true;
-    else if (a === "--project" || a === "--dir" || a === "--import") {
+    else if (a === "--project" || a === "--dir" || a === "--import" || a === "--hook") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new SyncFailed(`${a} needs a value\n${SYNC_MEMORY_USAGE}`);
       if (a === "--project") {
         if (!isWorkspace(value)) throw new SyncFailed(`${value} is not a project name (lower case letters, digits and -)`);
         args.project = value;
+      } else if (a === "--hook") {
+        if (!isWorkspace(value)) throw new SyncFailed(`${value} is not a workspace name (lower case letters, digits and -)`);
+        args.hook = value;
       } else if (a === "--dir") args.dir = value;
-      else args.importDir = value;
+      else args.importDirs!.push(value);
     } else throw new SyncFailed(`Unexpected argument ${a}\n${SYNC_MEMORY_USAGE}`);
+  }
+  if (args.hook && (args.project || args.dir || args.importDirs!.length || args.dryRun)) {
+    throw new SyncFailed(`--hook takes no other option\n${SYNC_MEMORY_USAGE}`);
   }
   return args;
 }
@@ -122,11 +200,16 @@ export function parseSyncMemoryArgs(argv: string[]): SyncMemoryArgs {
 
 const toPath = (root: string, rel: string) => join(root, ...rel.split("/"));
 
+/** A temporary file `writeWhole` leaves behind when a run is killed between
+ * the write and the rename: `<name>.<pid>.<random>.tmp`. */
+const LEFT_TEMP_RE = /\.\d+\.[a-z0-9]+\.tmp$/;
+
 /** Every `*.md` file under `root` with its text (hidden entries left out),
  * and every file name there (lower case). */
-async function readFolder(root: string): Promise<{ files: Record<string, string>; names: Set<string> }> {
+async function readFolder(root: string): Promise<{ files: Record<string, string>; names: Set<string>; temps: string[] }> {
   const files: Record<string, string> = {};
   const names = new Set<string>();
+  const temps: string[] = [];
   async function walk(dir: string, prefix: string) {
     for (const e of await readdir(dir, { withFileTypes: true })) {
       if (e.name.startsWith(".")) continue;
@@ -134,12 +217,13 @@ async function readFolder(root: string): Promise<{ files: Record<string, string>
       if (e.isDirectory()) await walk(join(dir, e.name), rel);
       else if (e.isFile()) {
         names.add(rel.toLowerCase());
+        if (LEFT_TEMP_RE.test(e.name)) temps.push(rel);
         if (e.name.endsWith(".md")) files[rel] = await readFile(join(dir, e.name), "utf8");
       }
     }
   }
   if (existsSync(root)) await walk(root, "");
-  return { files, names };
+  return { files, names, temps };
 }
 
 // ── The team ────────────────────────────────────────────────────────────────
@@ -211,7 +295,11 @@ class Report {
   deletedHere = new Set<string>();
   deletedFromTeam = new Set<string>();
   conflicts: string[] = [];
+  /** The conflict copies written this run, by name. */
+  copies = new Set<string>();
   skipped = new Map<string, string>();
+  /** Skipped files a sync in the member's terminal can send: held for a value, or for the vault. */
+  waiting = new Set<string>();
   people: Answered[] = [];
   toAnswer = new Map<string, number>();
 
@@ -220,12 +308,34 @@ class Report {
     plan.pushed.forEach((p) => this.pushed.add(p));
     plan.deletedHere.forEach((p) => this.deletedHere.add(p));
     plan.deletedFromTeam.forEach((p) => this.deletedFromTeam.add(p));
-    for (const c of plan.conflicts) this.conflicts.push(`${c.path}: the team's text; yours is beside it as ${c.copy}`);
+    for (const c of plan.conflicts) {
+      this.conflicts.push(`${c.path}: the team's text; yours is beside it as ${c.copy}`);
+      this.copies.add(c.copy);
+    }
     for (const line of plan.indexTeamLines) this.conflicts.push(`${INDEX_FILE}: your line was kept; the team's was: ${line}`);
   }
 
   skip(path: string, reason: string) {
     if (!this.skipped.has(path)) this.skipped.set(path, reason);
+  }
+
+  /** Skipped, and waiting for the member at a terminal. */
+  wait(path: string, reason: string) {
+    this.skip(path, reason);
+    this.waiting.add(path);
+  }
+
+  summary(outcome: SyncSummary["outcome"], version: number, reason?: string): SyncSummary {
+    return {
+      outcome,
+      ...(reason ? { reason } : {}),
+      version,
+      pulled: this.pulled.size,
+      pushed: this.pushed.size,
+      deleted: this.deletedHere.size + this.deletedFromTeam.size,
+      conflictCopies: [...this.copies].sort(),
+      waiting: [...this.waiting].sort(),
+    };
   }
 
   lines(summary: string, dryRun: boolean): string[] {
@@ -358,7 +468,7 @@ async function people(
           for (const path of g.files) {
             if (leftOut.has(path)) continue;
             current[path] = addShareFalse(current[path]);
-            await writeFile(toPath(opts.dir!, path), current[path], "utf8");
+            await writeWhole(toPath(opts.dir!, path), current[path]);
             leftOut.add(path);
           }
           report.people.push({ kind: g.kind, answer: "left out (share: false)", files: g.files.length });
@@ -469,7 +579,7 @@ async function people(
     const yes = /^y(es)?$/i.test((await ask!(`Rewrite ${paths.length} file${paths.length === 1 ? "" : "s"} as shown? [y/N] `)).trim());
     if (yes) {
       for (const path of paths) {
-        await writeFile(toPath(opts.dir!, path), rewritten[path], "utf8");
+        await writeWhole(toPath(opts.dir!, path), rewritten[path]);
         current[path] = rewritten[path];
       }
     }
@@ -486,11 +596,11 @@ async function people(
     held.add(path);
     const keys = pending.filter((f) => f.kind !== HOME_PATH).map((f) => groupKey(f.kind, f.normalised));
     if (keys.some((k) => vaultDown.has(k))) {
-      report.skip(path, "the vault did not answer (SYD-K019) for a value in it; it syncs once the value is filed");
+      report.wait(path, "the vault did not answer (SYD-K019) for a value in it; it syncs once the value is filed");
     } else if (keys.some((k) => !answers.has(k))) {
-      report.skip(path, `it holds a value nobody has answered for: run \`${hint}\` in a terminal`);
+      report.wait(path, `it holds a value nobody has answered for: run \`${hint}\` in a terminal`);
     } else {
-      report.skip(path, `it holds a value to rewrite as its identifier or ~: run \`${hint}\` in a terminal`);
+      report.wait(path, `it holds a value to rewrite as its identifier or ~: run \`${hint}\` in a terminal`);
     }
   }
 
@@ -506,12 +616,15 @@ async function people(
 
 // ── The sync ────────────────────────────────────────────────────────────────
 
+/** Remove the temporary files an earlier, killed run left in the folder. */
+async function removeLeftTemps(dir: string, temps: string[]) {
+  for (const rel of temps) await rm(toPath(dir, rel), { force: true });
+}
+
+/** Write the merge into the folder, each file whole or not at all, so a run
+ * stopped part way never leaves half a file for the next sync to push. */
 async function applyPlan(dir: string, plan: MergePlan) {
-  for (const [path, text] of Object.entries(plan.writes)) {
-    const full = toPath(dir, path);
-    await mkdir(dirname(full), { recursive: true });
-    await writeFile(full, text, "utf8");
-  }
+  for (const [path, text] of Object.entries(plan.writes)) await writeWhole(toPath(dir, path), text);
   for (const path of plan.deletes) await rm(toPath(dir, path), { force: true });
 }
 
@@ -566,8 +679,19 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
   const { client, out } = opts;
   const now = opts.now?.() ?? new Date();
   try {
+    const checkDeadline = () => {
+      if (opts.deadline !== undefined && Date.now() > opts.deadline) {
+        throw new SyncStopped("took too long", "Stopped: the sync's time ran out before anything more was written or sent.");
+      }
+    };
     const own = await client.getOwnTeamSetup();
     const ws = own.workspace;
+    if (opts.workspace && ws !== opts.workspace) {
+      throw new SyncStopped(
+        "the key is for another workspace",
+        `The key is for ${ws}, not ${opts.workspace}: nothing was synced. Set SYSTEMDOX_API_KEY to a key of ${opts.workspace}, or unset it.`
+      );
+    }
     const project = opts.project ?? (own.memory.length === 1 ? own.memory[0].project : undefined);
     if (!project) {
       throw new SyncFailed(
@@ -584,6 +708,15 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
 
     const stored = (await readState(ws)).memory?.[project];
     let team = await pullTeam(client, ws, project);
+    if (opts.unattended && stored && !team.exists) {
+      // A project this computer synced that the team no longer serves (gone, or
+      // no longer readable): merging against nothing would delete every file
+      // here with nobody at the terminal. Leave it for the member.
+      throw new SyncStopped(
+        "the team memory could not be read",
+        `${ws}/${project} could not be read from SystemDox: nothing was changed. Run sync-memory in your terminal to see why.`
+      );
+    }
     // With no base in state.json (a first sync) the merge's base is the empty
     // manifest, so every file on either side is an addition and nothing is
     // deleted; the push still names the team's latest version (proposal item 23).
@@ -602,15 +735,20 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
         report.skip(path, "its name has characters a team memory path cannot hold (letters, digits, '.', '_', '-')");
       } else shared[path] = text;
     }
+    // The folders to import, in order, after the local folder: a path already
+    // present (here, or from an earlier folder) with different text becomes a
+    // conflict pair, the later copy taking the .local- name.
     const importWrites: Record<string, string> = {};
-    if (opts.importDir) {
-      const other = await readFolder(resolve(opts.importDir));
-      const taken = new Set(folder.names);
+    const current: Record<string, string> = { ...folder.files };
+    const taken = new Set(folder.names);
+    for (const importDir of opts.importDirs ?? []) {
+      const other = await readFolder(resolve(importDir));
       for (const [path, text] of Object.entries(other.files).sort(([a], [b]) => a.localeCompare(b))) {
         if (!isShareable(path, text) || !isFilePath(path)) continue;
-        const here = folder.files[path];
+        const here = current[path];
         if (here === undefined) {
           shared[path] = text;
+          current[path] = text;
           importWrites[path] = text;
           taken.add(path.toLowerCase());
         } else if (here !== text) {
@@ -618,16 +756,14 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
           taken.add(copy.toLowerCase());
           importWrites[copy] = text;
           report.conflicts.push(`${path}: this folder's text; the imported one is beside it as ${copy}`);
+          report.copies.add(copy);
         }
       }
-      folder.names = taken;
-      if (!opts.dryRun) {
-        for (const [path, text] of Object.entries(importWrites)) {
-          const full = toPath(dir, path);
-          await mkdir(dirname(full), { recursive: true });
-          await writeFile(full, text, "utf8");
-        }
-      }
+    }
+    folder.names = taken;
+    if (!opts.dryRun) {
+      checkDeadline();
+      for (const [path, text] of Object.entries(importWrites)) await writeWhole(toPath(dir, path), text);
     }
 
     const found = await people(run, ws, shared, report, hint);
@@ -657,12 +793,16 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
         return 0;
       }
 
+      checkDeadline();
+      if (attempt === 1) await removeLeftTemps(dir, folder.temps);
       await applyPlan(dir, plan);
       let version = team.version;
       if (!sameManifest(plan.manifest, team.manifest)) {
+        checkDeadline();
         await upload(client, ws, project, plan, team.manifest, report);
       }
       if (!sameManifest(plan.manifest, team.manifest)) {
+        checkDeadline();
         try {
           version = (await client.pushMemoryVersion(ws, project, { baseVersion: team.version, manifest: plan.manifest })).version;
         } catch (e) {
@@ -674,6 +814,7 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
                 false
               )
             );
+            opts.summary?.(report.summary("moved-on", team.version, "moved on twice"));
             return 2;
           }
           // The folder now holds the merge with `team`: that is the new base.
@@ -699,24 +840,244 @@ export async function syncMemory(opts: SyncMemoryOptions): Promise<number> {
           false
         )
       );
+      opts.summary?.(report.summary("synced", version));
       return 0;
     }
   } catch (e) {
     out((e as Error).message);
+    opts.summary?.({
+      outcome: "failed",
+      reason: failureReason(e),
+      version: 0,
+      pulled: 0,
+      pushed: 0,
+      deleted: 0,
+      conflictCopies: [],
+      waiting: [],
+    });
     return 1;
   }
+}
+
+// ── The hook run ────────────────────────────────────────────────────────────
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** The lines the hook prints for one project (contract.md "--hook"): never a value. */
+export function hookLines(ws: string, project: string, folder: string, s: SyncSummary): string[] {
+  if (s.outcome !== "synced") {
+    return [`Team memory ${ws}/${project}: not synced (${s.reason ?? "it did not finish"}); your files are unchanged and the next session tries again.`];
+  }
+  const lines = [`Team memory ${ws}/${project}: version ${s.version}, ${s.pulled} pulled, ${s.pushed} pushed, ${s.deleted} deleted.`];
+  if (s.conflictCopies.length) {
+    lines.push(`  ${plural(s.conflictCopies.length, "conflict copy", "conflict copies")} to tidy in ${folder}: ${s.conflictCopies.join(", ")}`);
+  }
+  if (s.waiting.length) {
+    lines.push(
+      `  ${plural(s.waiting.length, "file waits", "files wait")} for you: run \`${SYNC_MEMORY_COMMAND} --project ${project}\` in your terminal.`
+    );
+  }
+  return lines;
+}
+
+/** Append a run's report to the workspace's log; the file is started again past its size. */
+async function appendLog(ws: string, lines: string[]): Promise<void> {
+  const path = syncLogPath(ws);
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    if ((await stat(path)).size > HOOK_LOG_MAX_BYTES) await writeFile(path, "", "utf8");
+  } catch {
+    // no log yet
+  }
+  await appendFile(path, lines.join("\n") + "\n", "utf8");
+}
+
+export interface HookIo extends CommandIo {
+  client?: SyncClient;
+  now?: () => Date;
+  /** The budget and the lock's staleness, for tests. */
+  budgetMs?: number;
+  lockStaleMs?: number;
+  /** Epoch ms the budget counts from: the process start for the CLI (npx and
+   * loading count against Claude Code's 30 seconds too), now otherwise. */
+  startedAt?: number;
+}
+
+/** Take the workspace's lock: created only if absent; a lock older than its
+ * staleness is removed and taken once more. True when this run holds it. */
+async function takeLock(lock: string, staleMs: number, now: Date): Promise<boolean> {
+  await mkdir(dirname(lock), { recursive: true });
+  const body = JSON.stringify({ pid: process.pid, at: now.toISOString() }) + "\n";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lock, "wx");
+      try {
+        await handle.writeFile(body, "utf8");
+      } catch (err) {
+        await handle.close();
+        await rm(lock, { force: true }); // an empty lock would hold every hook back
+        throw err;
+      }
+      await handle.close();
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      let seen;
+      try {
+        seen = await stat(lock);
+      } catch {
+        continue; // released between the two calls: try again
+      }
+      if (Date.now() - seen.mtimeMs < staleMs || attempt === 1) return false;
+      // Remove it only if it is still the lock judged stale: another run may
+      // have taken it over in between.
+      try {
+        const now2 = await stat(lock);
+        if (now2.ino !== seen.ino || now2.mtimeMs !== seen.mtimeMs) return false;
+      } catch {
+        continue;
+      }
+      await rm(lock, { force: true });
+    }
+  }
+  return false;
+}
+
+/** Release the lock only if this process holds it. */
+async function releaseLock(lock: string): Promise<void> {
+  try {
+    const held = JSON.parse(await readFile(lock, "utf8")) as { pid?: number };
+    if (held.pid === process.pid) await rm(lock, { force: true });
+  } catch {
+    // gone already, or not ours to read
+  }
+}
+
+/**
+ * `sync-memory --hook <workspace>`: the run the team plugin makes at the start
+ * and the end of a session. Every project this computer has synced before, in
+ * its default folder; never a first sync; one line per project on stdout (plus
+ * a line for conflict copies and one for waiting files), the full report in
+ * the log; one run at a time per workspace; a budget; exit 0 whatever happens.
+ */
+export async function runHookSync(workspace: string, io: HookIo, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  try {
+    return await hookSync(workspace, io, env);
+  } catch (e) {
+    // Exit 0 whatever happens: a session is never held up by its memory.
+    try {
+      io.err(`sync-memory --hook: ${(e as Error).message}`);
+    } catch {
+      // nowhere to say it
+    }
+    return 0;
+  }
+}
+
+async function hookSync(workspace: string, io: HookIo, env: NodeJS.ProcessEnv): Promise<number> {
+  if (!isWorkspace(workspace)) {
+    io.err(`sync-memory --hook: ${JSON.stringify(workspace)} is not a workspace name`);
+    return 0;
+  }
+  const now = io.now?.() ?? new Date();
+  const deadline = (io.startedAt ?? Date.now()) + (io.budgetMs ?? HOOK_BUDGET_MS);
+  let client = io.client;
+  if (!client) {
+    let apiKey: string | undefined;
+    let apiUrl: string;
+    try {
+      apiKey = await apiKeyFor(workspace, env);
+      apiUrl = apiUrlFrom(env);
+    } catch {
+      return 0;
+    }
+    if (!apiKey) return 0;
+    client = new SystemDoxApiClient({ apiKey, apiUrl, cacheTtlMs: 0, defaultOrg: undefined });
+  }
+  let projects: string[];
+  try {
+    projects = Object.keys((await readState(workspace)).memory ?? {}).sort();
+  } catch {
+    return 0;
+  }
+  if (!projects.length) return 0;
+
+  const lock = syncLockPath(workspace);
+  if (!(await takeLock(lock, io.lockStaleMs ?? HOOK_LOCK_STALE_MS, now))) {
+    io.out(`Team memory ${workspace}: a sync is already running.`);
+    return 0;
+  }
+  try {
+    for (const project of projects) {
+      const folder = join(workspaceDir(workspace), "memory", project);
+      const report: string[] = [];
+      let summary: SyncSummary | undefined;
+      const left = deadline - Date.now();
+      if (left > 0) {
+        let timer: NodeJS.Timeout | undefined;
+        const timeout = new Promise<"timeout">((resolveTimeout) => {
+          timer = setTimeout(() => resolveTimeout("timeout"), left);
+        });
+        const run = syncMemory({
+          project,
+          dryRun: false,
+          client,
+          workspace,
+          deadline,
+          unattended: true,
+          out: (...lines) => report.push(...lines),
+          summary: (s) => (summary = s),
+          now: io.now,
+        });
+        const won = await Promise.race([run.then(() => "done" as const), timeout]);
+        if (timer) clearTimeout(timer);
+        if (won === "timeout") summary = undefined;
+      }
+      const result: SyncSummary = summary ?? {
+        outcome: "failed",
+        reason: "took too long",
+        version: 0,
+        pulled: 0,
+        pushed: 0,
+        deleted: 0,
+        conflictCopies: [],
+        waiting: [],
+      };
+      const lines = hookLines(workspace, project, folder, result);
+      lines.forEach((l) => io.out(l));
+      try {
+        await appendLog(workspace, [`--- ${now.toISOString()} ${workspace}/${project}`, ...lines, ...report]);
+      } catch (e) {
+        io.err(`sync-memory --hook: the log could not be written: ${(e as Error).message}`);
+      }
+    }
+  } finally {
+    await releaseLock(lock);
+  }
+  return 0;
 }
 
 /** The command: parse, find the key, sync. */
 export async function runSyncMemory(
   argv: string[],
-  io: CommandIo & { client?: SyncClient; ask?: (question: string) => Promise<string>; now?: () => Date },
+  io: HookIo & { ask?: (question: string) => Promise<string> },
   env: NodeJS.ProcessEnv = process.env
 ): Promise<number> {
   let args: SyncMemoryArgs;
   let client = io.client;
   try {
     args = parseSyncMemoryArgs(argv);
+  } catch (e) {
+    if (argv.includes("--hook")) {
+      // A hook never holds a session up, even on a usage error: one line, exit 0.
+      io.err(`sync-memory --hook: ${(e as Error).message.split("\n")[0]}`);
+      return 0;
+    }
+    io.err((e as Error).message);
+    return 1;
+  }
+  if (args.hook) return runHookSync(args.hook, io, env);
+  try {
     if (!client) {
       const apiUrl = apiUrlFrom(env);
       const apiKey = await localApiKey(env);

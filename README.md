@@ -204,8 +204,9 @@ reaches every member's computer as one plugin, `<workspace>-setup`.
   before anything is sent. Every part but `instructions` makes a new plugin
   version, which each member accepts at their next update. For `mcp`, every
   `env` and `headers` value is replaced by a `${NAME}` reference to each
-  member's own environment variable. Publishing `hooks`, `mcp`, `agents` or
-  `commands` needs the admin role (SYD-A003 otherwise).
+  member's own environment variable. Publishing any part needs `build:write`
+  on the default space (SYD-A001 otherwise); only an admin or owner mints such a
+  key, and each member accepts every new plugin version in their own terminal.
 - **`resolve_person`** (both servers) reads back a person a team memory names
   by identifier (`` `con_…` (reseller, sales) ``): their label, name, phone
   number and email address. The details are for that session only; the memory
@@ -216,10 +217,13 @@ reaches every member's computer as one plugin, `<workspace>-setup`.
   holds a phone number, an email address or a home-folder path is skipped and
   listed with the command to run yourself. Inputs: `project`, `dryRun`.
 
+How the team memory works, for a member and for a team lead, is in the guide
+[Team memory](https://www.systemdox.com/guides/team-memory).
+
 One command sets up your computer, and the same command updates it:
 
 ```bash
-npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--yes] [--overwrite]
+npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]
 ```
 
 - It first writes the SystemDox MCP server into your AI tool's config, without
@@ -230,7 +234,8 @@ npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--yes]
   everything it will add: the marketplace entry for `~/.claude/settings.json`,
   the plugin with every hook command and every MCP server's command or URL
   verbatim, the import block for `~/.claude/CLAUDE.md`, each team memory with
-  its file count and folder, and the `autoMemoryDirectory` it will set. On an
+  its file count and folder, every folder its first sync will import, and the
+  `autoMemoryDirectory` it will set. On an
   update it shows only what changed, with a line diff for hooks and
   instructions. Nothing changes until you answer `y`.
 - Then, in this order: the team instructions into `~/.claude/systemdox/<workspace>/CLAUDE.md`
@@ -239,7 +244,11 @@ npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--yes]
   `systemdox-<workspace>`, into `~/.claude/settings.json` (nothing else in
   either file is touched); and, for the project (`--project`, or the only
   one), `autoMemoryDirectory` in `<checkout>/.claude/settings.local.json`
-  (`--dir`, or the current folder), followed by its first sync.
+  (`--dir`, or the current folder), followed by its first sync. That first sync
+  on this computer imports the memory Claude Code already kept for the checkout
+  (`~/.claude/projects/<folder>/memory/`, for the checkout and, inside a Git
+  repository, its top folder) and each folder `--import` names, in that order;
+  those folders are not changed. A later run imports nothing.
 - Two steps are left for you, because Claude Code registers a marketplace only
   once a session has started: open Claude Code once in any folder and close
   it, then run `claude plugin install <workspace>-setup@systemdox-<workspace>`
@@ -255,12 +264,13 @@ Each project's team memory is synced file by file with one command, which you
 run in your own terminal:
 
 ```bash
-npx -y @systemdox/mcp-server sync-memory [--project <name>] [--dir <folder>] [--import <folder>] [--dry-run]
+npx -y @systemdox/mcp-server sync-memory [--project <name>] [--dir <folder>] [--import <folder>]... [--dry-run]
 ```
 
 - The folder is `--dir`, or `~/.claude/systemdox/<workspace>/memory/<project>/`.
   Only `feedback`, `project` and `reference` memories and `MEMORY.md` are
-  shared; a `user` memory, a file with `share: false` and a
+  shared, the `type` read at the top of the frontmatter or under `metadata:`
+  (the form Claude Code writes); a `user` memory, a file with `share: false` and a
   `<name>.local-<date>.md` conflict copy never leave your computer, and the
   sync never touches them.
 - A file changed only here goes up, one changed only by the team comes down,
@@ -271,14 +281,32 @@ npx -y @systemdox/mcp-server sync-memory [--project <name>] [--dir <folder>] [--
   a name), `o` ours, not a person, `x` leave these files out (`share: false`),
   `s` skip for now. After one `y/N` over the whole diff, each person becomes
   their identifier (`` `con_…` (reseller, sales) ``) and a home folder `~`.
-- `--import <folder>` merges a second copy of the same memory in (your first
-  sync), keeping every difference as a pair; that folder is not changed.
+- `--import <folder>` merges another copy of the same memory in (your first
+  sync), keeping every difference as a pair; it may be repeated, the folders
+  taken in order, and none of them is changed.
   `--dry-run` shows what would be pulled, pushed, deleted, conflicted and
   skipped, and how many values are still to answer; it asks, writes and sends
   nothing.
 - Exit codes: `0` synced (conflict copies and skipped files are listed, not
   errors), `1` usage / no key / API error, `2` the team memory moved on twice
   while syncing (your folder holds the merge; run it again).
+
+When your workspace has a team memory, the team plugin runs the sync for you
+at the start (a new or resumed session) and the end of every session:
+
+```bash
+npx -y @systemdox/mcp-server sync-memory --hook <workspace>
+```
+
+- It syncs only the projects this computer synced before (the first sync is
+  yours, in your terminal), asks nothing and rewrites nothing.
+- It prints one line per project, which Claude Code adds to the session, plus a
+  line naming any conflict copy to tidy and one for files waiting for you, with
+  the command to run. A value is never printed. The full report is appended to
+  `~/.claude/systemdox/<workspace>/sync-memory.log`.
+- One run at a time per workspace (`sync.lock`), a 20-second budget, and exit
+  `0` always: offline or slow, it says the memory was not synced and the next
+  session tries again.
 
 Claude Code runs two commands itself; you never type them:
 

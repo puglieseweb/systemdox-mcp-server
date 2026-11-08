@@ -1,8 +1,8 @@
 /**
  * The team setup that `systemdox-mcp-server setup [--project <name>]
- * [--dir <checkout>] [--yes] [--overwrite]` runs after it has written the MCP
- * server into an AI tool's config (ADR-217 with Amendments 1 and 2,
- * specs/changes/team-setup/contract.md "setup").
+ * [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]` runs after
+ * it has written the MCP server into an AI tool's config (ADR-217 with
+ * Amendments 1 to 3, specs/changes/team-setup/contract.md "setup").
  *
  * 1. Check: `GET /team-setup` names the workspace; `claude --version` must be
  *    at least `minClaudeCodeVersion` (exit 3 otherwise, nothing changed).
@@ -13,7 +13,12 @@
  *    instructions (exit 2 if the member edited them, unless --overwrite); the
  *    import block in ~/.claude/CLAUDE.md; the marketplace in
  *    ~/.claude/settings.json; the project's `autoMemoryDirectory` in
- *    <checkout>/.claude/settings.local.json, then its sync.
+ *    <checkout>/.claude/settings.local.json, then its sync. On the project's
+ *    first sync on this computer, the sync imports the memory Claude Code kept
+ *    for the checkout (`~/.claude/projects/<slug>/memory/`, for the checkout's
+ *    path and, inside a Git repository, the repository's top folder) and each
+ *    folder `--import` names, every one shown with its file count first
+ *    (Amendment 3).
  * 4. Finish: the two steps a person must take in Claude Code.
  *
  * It never runs `claude plugin marketplace add` and never sets
@@ -32,7 +37,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { SystemDoxApiClient } from "./lib/api-client.js";
-import { lineDiff } from "./lib/memory-sync.js";
+import { isShareable, lineDiff } from "./lib/memory-sync.js";
 import {
   homeDir,
   isWorkspace,
@@ -48,12 +53,14 @@ import type { PluginVersion, TeamSetup } from "./lib/team-setup-types.js";
 import { syncMemory, type SyncClient } from "./sync-memory.js";
 
 export const SETUP_USAGE =
-  "Usage: systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--yes] [--overwrite]";
+  "Usage: systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]";
 export const HEADERS_HELPER = "npx -y @systemdox/mcp-server marketplace-auth";
 
 export interface TeamSetupArgs {
   project?: string;
   dir?: string;
+  /** Folders to import on the project's first sync on this computer (`--import`, repeatable). */
+  importDirs?: string[];
   yes: boolean;
   overwrite: boolean;
 }
@@ -74,6 +81,8 @@ export interface TeamSetupOptions extends TeamSetupArgs {
   cwd?: string;
   /** `claude --version`'s output, or undefined when Claude Code is not found. */
   claudeVersion?: () => Promise<string | undefined>;
+  /** The top folder of the Git repository holding `dir`, or undefined outside one. */
+  gitTop?: (dir: string) => Promise<string | undefined>;
   now?: () => Date;
 }
 
@@ -81,18 +90,19 @@ export interface TeamSetupOptions extends TeamSetupArgs {
 class SetupFailed extends Error {}
 
 export function parseSetupArgs(argv: string[]): TeamSetupArgs {
-  const args: TeamSetupArgs = { yes: false, overwrite: false };
+  const args: TeamSetupArgs = { yes: false, overwrite: false, importDirs: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--yes") args.yes = true;
     else if (a === "--overwrite") args.overwrite = true;
-    else if (a === "--project" || a === "--dir") {
+    else if (a === "--project" || a === "--dir" || a === "--import") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new Error(`${a} needs a value\n${SETUP_USAGE}`);
       if (a === "--project") {
         if (!isWorkspace(value)) throw new Error(`${value} is not a project name (lower case letters, digits and -)`);
         args.project = value;
-      } else args.dir = value;
+      } else if (a === "--dir") args.dir = value;
+      else args.importDirs!.push(value);
     } else throw new Error(`Unexpected argument ${a}\n${SETUP_USAGE}`);
   }
   return args;
@@ -117,6 +127,93 @@ export async function claudeCodeVersion(): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/** The top folder of the Git repository holding `dir`, or undefined outside one. */
+export async function gitTopFolder(dir: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await run("git", ["-C", dir, "rev-parse", "--show-toplevel"], { timeout: 10_000, windowsHide: true });
+    const top = stdout.trim();
+    return top ? resolve(top) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ── The memory Claude Code kept for a checkout (Amendment 3) ────────────────
+
+/** `~/.claude/projects/<slug>/memory/` for an absolute path: Claude Code's slug
+ * replaces every character that is not a letter or a digit with `-`
+ * (`/home/jo/git` → `-home-jo-git`; `C:\Users\jo\git` → `C--Users-jo-git`). */
+export function claudeMemoryFolder(path: string): string {
+  return join(homeDir(), ".claude", "projects", path.replace(/[^A-Za-z0-9]/g, "-"), "memory");
+}
+
+/** How many files of a folder a sync would share (hidden entries left out):
+ * the `feedback`, `project` and `reference` memories and `MEMORY.md`. A `user`
+ * memory, a `share: false` file and a conflict copy stay where they are, so
+ * they are not counted. 0 when the folder is missing. */
+export async function countMemoryFiles(folder: string): Promise<number> {
+  let count = 0;
+  async function walk(dir: string, prefix: string) {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(join(dir, e.name), rel);
+      else if (e.isFile() && e.name.endsWith(".md")) {
+        try {
+          if (isShareable(rel, await readFile(join(dir, e.name), "utf8"))) count++;
+        } catch {
+          // unreadable: not counted, and the sync will say so
+        }
+      }
+    }
+  }
+  await walk(folder, "");
+  return count;
+}
+
+export interface MemoryImport {
+  folder: string;
+  files: number;
+  /** Named by `--import`, as opposed to found for the checkout. */
+  named: boolean;
+}
+
+/**
+ * The folders a project's first sync imports (contract.md "setup", step 3.5):
+ * the memory Claude Code kept for the checkout's own path and, inside a Git
+ * repository, for the repository's top folder, each when it holds a file and
+ * is not the team folder itself; then each folder `--import` names.
+ */
+export async function memoryImports(
+  checkout: string,
+  teamFolder: string,
+  named: string[],
+  gitTop: (dir: string) => Promise<string | undefined> = gitTopFolder
+): Promise<MemoryImport[]> {
+  const candidates = [resolve(checkout)];
+  const top = await gitTop(checkout);
+  if (top && !candidates.includes(top)) candidates.push(top);
+  const out: MemoryImport[] = [];
+  for (const path of candidates) {
+    const folder = claudeMemoryFolder(path);
+    if (resolve(folder) === resolve(teamFolder)) continue;
+    const files = await countMemoryFiles(folder);
+    if (files) out.push({ folder, files, named: false });
+  }
+  for (const dir of named) {
+    const folder = resolve(dir);
+    if (out.some((i) => i.folder === folder)) continue;
+    out.push({ folder, files: await countMemoryFiles(folder), named: true });
+  }
+  return out;
 }
 
 function parseVersion(text: string | undefined): number[] | undefined {
@@ -452,6 +549,21 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
       items.push(item(`autoMemoryDirectory in ${localSettings}`, [memoryFolder]));
     }
 
+    // The project's first sync on this computer imports the memory Claude Code
+    // kept for the checkout, and each folder --import names (Amendment 3).
+    const imports: MemoryImport[] =
+      project && memoryFolder && !state.memory?.[project]
+        ? await memoryImports(checkout, memoryFolder, opts.importDirs ?? [], opts.gitTop)
+        : [];
+    for (const i of imports) {
+      items.push(
+        item(
+          `${i.named ? "the folder --import names" : "the memories Claude Code kept for this checkout"}, imported into ${project} on its first sync`,
+          [`${i.folder}: ${i.files} file${i.files === 1 ? "" : "s"} to share`]
+        )
+      );
+    }
+
     const pending = items.filter((i) => !accepted.has(i.sha256));
     if (pending.length) {
       if (!canAsk) {
@@ -527,6 +639,7 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
       const code = await syncMemory({
         project,
         dryRun: false,
+        importDirs: imports.map((i) => i.folder),
         client,
         out: (...lines) => lines.forEach((l) => out(l)),
         ask: opts.terminal ? opts.ask : undefined,

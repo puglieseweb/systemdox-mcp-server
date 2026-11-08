@@ -4,8 +4,9 @@
  * `src/sync-memory.ts` reads the folders and calls the API around it.
  *
  * - **What is shared** (`isShareable`): a `*.md` file whose frontmatter `type`
- *   is `feedback`, `project` or `reference`, and `MEMORY.md`; never a file
- *   with `share: false` or a `<name>.local-<date>.md` conflict copy.
+ *   (at the top level or under `metadata:`, Amendment 3) is `feedback`,
+ *   `project` or `reference`, and `MEMORY.md`; never a file with
+ *   `share: false` or a `<name>.local-<date>.md` conflict copy.
  * - **The merge** (`decide`, `planMerge`): three-way per path, with the base
  *   (the manifest of the last sync), the team's latest version and the local
  *   folder, row by row as the contract's table says.
@@ -58,20 +59,52 @@ export interface Frontmatter {
 }
 
 /** The frontmatter's `type` and `share`, or undefined when the file has no
- * leading block. Only top-level `key: value` lines are read. */
+ * leading block. They are read at the top level, or one level under
+ * `metadata:`, the form Claude Code writes (`metadata:` on one line,
+ * `  type: project` under it); a top-level key wins over the nested one
+ * (ADR-217 Amendment 3). Read as the server's YAML reads them:
+ * - a block with a tab in a line's indentation is not YAML, so the server sees
+ *   no front matter: nothing is read here either (no type, so not shared);
+ * - only keys at the first indent under `metadata:` count, never deeper ones. */
 export function readFrontmatter(text: string): Frontmatter | undefined {
   const m = BLOCK_RE.exec(text);
   if (!m) return undefined;
   const front: Frontmatter = { shareFalse: false };
-  for (const line of m[1].split(/\r?\n/)) {
-    const kv = /^([A-Za-z_][\w-]*)[ \t]*:[ \t]*(.*?)[ \t]*$/.exec(line);
+  const lines = m[1].split(/\r?\n/);
+  if (lines.some((l) => /^[ \t]*\t/.test(l) && l.trim())) return front;
+  let topType: string | undefined;
+  let topShare: boolean | undefined;
+  let nestedType: string | undefined;
+  let nestedShare: boolean | undefined;
+  let inMetadata = false;
+  let nestedIndent: number | undefined;
+  for (const line of lines) {
+    if (!line.trim() || /^[ \t]*#/.test(line)) continue;
+    const indent = /^ */.exec(line)![0].length;
+    if (indent === 0) {
+      inMetadata = /^metadata[ \t]*:[ \t]*(#.*)?$/.test(line);
+      nestedIndent = undefined;
+    }
+    const kv = /^ *([A-Za-z_][\w-]*)[ \t]*:[ \t]*(.*?)[ \t]*$/.exec(line);
     if (!kv) continue;
     const raw = kv[2].replace(/[ \t]+#.*$/, "");
     const quoted = /^(["'])(.*)\1$/.exec(raw);
     const value = quoted ? quoted[2] : raw;
-    if (kv[1] === "type") front.type = value.trim().toLowerCase();
-    if (kv[1] === "share") front.shareFalse = quoted ? value.trim().toLowerCase() === "false" : YAML_FALSE.has(value);
+    const isFalse = quoted ? value.trim().toLowerCase() === "false" : YAML_FALSE.has(value);
+    if (indent === 0) {
+      if (kv[1] === "type") topType = value.trim().toLowerCase();
+      if (kv[1] === "share") topShare = isFalse;
+      continue;
+    }
+    if (!inMetadata) continue;
+    nestedIndent ??= indent;
+    if (indent !== nestedIndent) continue;
+    if (kv[1] === "type") nestedType = value.trim().toLowerCase();
+    if (kv[1] === "share") nestedShare = isFalse;
   }
+  const type = topType ?? nestedType;
+  if (type !== undefined) front.type = type;
+  front.shareFalse = (topShare ?? nestedShare) === true;
   return front;
 }
 

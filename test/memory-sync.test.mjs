@@ -262,3 +262,26 @@ test("rewriteValues and personToken: the identifier as returned, the label after
   assert.equal(out, `Call \`${id}\` (reseller, sales) or 020 7946 0321; notes in ~\\git\\notes\n`);
   assert.deepEqual(lineDiff("a\nb\nc", "a\nB\nc"), ["- b", "+ B"]);
 });
+
+test("frontmatter: type and share are read under metadata: too, the top level winning (Amendment 3)", () => {
+  const nested = (type, extra = "") => `---\nname: n\ndescription: d\nmetadata:\n  type: ${type}\n${extra}---\n\nbody\n`;
+  assert.deepEqual(readFrontmatter(nested("project")), { type: "project", shareFalse: false });
+  assert.equal(isShareable("a.md", nested("project")), true, "the form Claude Code writes");
+  assert.equal(isShareable("a.md", nested("reference")), true);
+  assert.equal(isShareable("a.md", nested("user")), false);
+  assert.equal(isShareable("a.md", nested("project", "  share: false\n")), false, "share under metadata");
+  assert.equal(isShareable("a.md", `---\ntype: feedback\nmetadata:\n  type: user\n---\nbody\n`), true, "the top level wins");
+  assert.equal(isShareable("a.md", `---\nname: n\nother:\n  type: project\n---\nbody\n`), false, "only metadata: is read");
+  assert.equal(isShareable("a.md", `---\nname: n\nmetadata:\n  kind: x\nlast: y\n  type: project\n---\nbody\n`), false, "an indented line after another key is not metadata's");
+});
+
+test("frontmatter: read as the server's YAML reads it (the review's probes)", () => {
+  const block = (lines) => `---\n${lines.join("\n")}\n---\nbody\n`;
+  assert.equal(isShareable("a.md", block(["share: true", "metadata:", "  type: project", "  share: false"])), true, "a top-level share wins");
+  assert.equal(isShareable("a.md", block(["metadata:", "  foo:", "    type: project"])), false, "only the first level under metadata");
+  assert.equal(isShareable("a.md", block(["metadata:", "\ttype: project"])), false, "a tab in the indentation is not YAML");
+  assert.equal(isShareable("a.md", block(["type: project", "notes:", "\tx: y"])), false, "a tab anywhere in the block: no front matter, as the server reads it");
+  assert.equal(isShareable("a.md", "---\r\nname: n\r\nmetadata:\r\n  type: project\r\n---\r\nbody\r\n"), true, "CRLF");
+  assert.equal(isShareable("a.md", block(["metadata:", "  # a comment", "  type: feedback"])), true, "a comment line");
+  assert.equal(isShareable("a.md", block(["metadata: {type: project}"])), false, "a flow map is not read (the safe direction)");
+});

@@ -1,4 +1,4 @@
-// Binds test/features/team-setup.feature (ADR-217 with Amendments 1 and 2, ids TSU-M-nn).
+// Binds test/features/team-setup.feature (ADR-217 with Amendments 1 to 3, ids TSU-M-nn).
 // Gate 3 of ADR-201: every scenario is @proposed. node:test has no expected
 // failure, so the state tag is held to the binding instead: a @proposed
 // scenario must have no test here, and a @built one must have one. The pull
@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import { crc32, deflateRawSync } from "node:zlib";
 import { SystemDoxApiClient, SystemDoxApiError } from "../dist/lib/api-client.js";
 import { runSyncMemory, syncMemory } from "../dist/sync-memory.js";
-import { parseSetupArgs, runTeamSetup, setJsonMember, withImportBlock } from "../dist/setup-team.js";
+import { claudeMemoryFolder, memoryImports, parseSetupArgs, runTeamSetup, setJsonMember, withImportBlock } from "../dist/setup-team.js";
 import { setupMcpServer } from "../dist/setup-mcp.js";
 import { findPersonValues, findSecrets, normalise, rewriteHomePaths } from "../dist/lib/person-values.js";
 import {
@@ -29,6 +29,8 @@ import {
   readState,
   runMarketplaceAuth,
   statePath,
+  syncLockPath,
+  syncLogPath,
   writeCredentials,
   writeState,
 } from "../dist/lib/team-setup-files.js";
@@ -1355,7 +1357,11 @@ async function ownFiles(home) {
 }
 
 /** Run the team setup as `setup` does, with the member's answers. */
-async function setupRun(client, home, { answers = ["y"], yes = false, overwrite = false, isTerminal = true, keySource = "prompt", project } = {}) {
+async function setupRun(
+  client,
+  home,
+  { answers = ["y"], yes = false, overwrite = false, isTerminal = true, keySource = "prompt", project, importDirs = [], gitTop = async () => undefined } = {}
+) {
   const lines = [];
   const t = terminal(...answers);
   const code = await runTeamSetup({
@@ -1368,6 +1374,8 @@ async function setupRun(client, home, { answers = ["y"], yes = false, overwrite 
     yes,
     overwrite,
     project,
+    importDirs,
+    gitTop,
     cwd: join(home, "checkout"),
     now: TODAY,
   });
@@ -1812,8 +1820,10 @@ test("setup's file edits: one member set or replaced, every other byte kept", ()
   assert.equal(withImportBlock("<!-- systemdox:acme-two -->\n", "acme"), "<!-- systemdox:acme-two -->\n" + block.replaceAll("\r\n", "\n") + "\n");
 });
 
-test("setup's usage: the four options, and nothing else", () => {
-  assert.deepEqual(parseSetupArgs(["--project", "notes", "--dir", "x", "--yes", "--overwrite"]), { project: "notes", dir: "x", yes: true, overwrite: true });
+test("setup's usage: the five options, and nothing else (--import repeatable, Amendment 3)", () => {
+  assert.deepEqual(parseSetupArgs(["--project", "notes", "--dir", "x", "--yes", "--overwrite"]), { project: "notes", dir: "x", yes: true, overwrite: true, importDirs: [] });
+  assert.deepEqual(parseSetupArgs(["--import", "d", "--import", "c"]).importDirs, ["d", "c"]);
+  assert.throws(() => parseSetupArgs(["--import"]), /--import needs a value/);
   assert.throws(() => parseSetupArgs(["--force"]), /Unexpected argument --force/);
   assert.throws(() => parseSetupArgs(["--project"]), /--project needs a value/);
   assert.throws(() => parseSetupArgs(["--project", "Bad Name"]), /not a project name/);
@@ -1868,6 +1878,348 @@ test("team-setup.feature: every scenario has one state tag and a unique id", () 
     assert.equal(state.length, 1, `${s.id} needs exactly one of @proposed or @built, has ${s.tags.join(" ") || "none"}`);
   }
 });
+
+// ── The memory reaches every computer (Amendment 3: TSU-M-36 to TSU-M-44) ──
+
+/** A memory file as Claude Code writes it now: the type under metadata. */
+const memNested = (type, body) => `---\nname: ${type} note\ndescription: a note\nmetadata:\n  type: ${type}\n---\n\n${body}\n`;
+
+/** The run the team plugin makes: `sync-memory --hook acme`, with the client injected. */
+async function hook({ client, now = TODAY, budgetMs, lockStaleMs } = {}) {
+  const r = io();
+  const code = await runSyncMemory(["--hook", "acme"], { ...r, client, now, budgetMs, lockStaleMs });
+  return { code, out: r.lines.out, err: r.lines.err, text: r.lines.out.join("\n") };
+}
+
+/** Where Claude Code keeps the memory of the test checkout: its path's slug. */
+const keptFolder = (home) => join(home, ".claude", "projects", join(home, "checkout").replace(/[^A-Za-z0-9]/g, "-"), "memory");
+
+scenario("TSU-M-36", () =>
+  withHome(async (home) => {
+    const team = fakeTeam();
+    const dir = memoryDir(home);
+    await write(dir, "a.md", memNested("project", "A, its type under metadata"));
+    await write(dir, "b.md", mem("project", "B, its type at the top"));
+    const { code, text } = await sync(team);
+    assert.equal(code, 0, text);
+    assert.deepEqual(Object.keys(team.latest()).sort(), ["a.md", "b.md"], "the team has both files");
+    assert.equal(team.latest()["a.md"], memNested("project", "A, its type under metadata"), "sent as written, never rewritten");
+  })
+);
+
+scenario("TSU-M-37", () =>
+  withHome(async (home, network) => {
+    await writeCredentials("acme", KEY_ACME);
+    const v1 = { "a.md": mem("project", "A"), "b.md": mem("feedback", "B, as last synced") };
+    const team = fakeTeam({ files: v1 });
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 1);
+    team.commit({ ...v1, "b.md": mem("feedback", "B, changed by the team") });
+
+    const r = await hook({ client: team.client });
+    assert.equal(r.code, 0, r.text);
+    assert.equal(await readFile(join(dir, "b.md"), "utf8"), mem("feedback", "B, changed by the team"), "the member has the team's b.md");
+    assert.deepEqual(r.out, ["Team memory acme/notes: version 2, 1 pulled, 0 pushed, 0 deleted."], "one line");
+    const log = await readFile(syncLogPath("acme"), "utf8");
+    assert.match(log, /^--- \d{4}-\d\d-\d\dT[\d:.]+Z acme\/notes$/m, "the run is dated in the log");
+    assert.match(log, /\nSynced acme\/notes at version 2: 1 pulled, 0 pushed, 0 deleted, 0 conflicts, 0 skipped\.\n/, "the full report is in the log");
+    assert.match(log, /\nPulled:\n- b\.md/);
+    assert.ok(!existsSync(syncLockPath("acme")), "the lock is released");
+    assert.equal((await readState("acme")).memory[PROJECT].version, 2, "the base moved on");
+    assert.deepEqual(network, []);
+  })
+);
+
+scenario("TSU-M-38", () =>
+  withHome(async (home) => {
+    await writeCredentials("acme", KEY_ACME);
+    const team = fakeTeam({ files: TEAM_MEMORY });
+    const before = await tree(home);
+    const r = await hook({ client: team.client });
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.out, [], "nothing is printed");
+    assert.deepEqual(r.err, []);
+    assert.deepEqual(await tree(home), before, "nothing is written");
+    assert.deepEqual(team.calls, [], "nothing is pulled or pushed: a first sync is the person's");
+  })
+);
+
+scenario("TSU-M-39", () =>
+  withHome(async (home) => {
+    await writeCredentials("acme", KEY_ACME);
+    const v1 = { "a.md": mem("project", "A") };
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 1);
+    const before = await texts(dir);
+
+    // SystemDox cannot be reached: one line, exit 0, the files as they were.
+    const down = { getOwnTeamSetup: async () => { throw new TypeError("fetch failed"); } };
+    const started = Date.now();
+    const r = await hook({ client: down });
+    assert.ok(Date.now() - started < 20_000, "within its budget");
+    assert.equal(r.code, 0, "it ends as a success");
+    assert.deepEqual(r.out, [
+      "Team memory acme/notes: not synced (SystemDox could not be reached); your files are unchanged and the next session tries again.",
+    ]);
+    assert.deepEqual(await texts(dir), before);
+
+    // SystemDox answers too slowly: the budget ends the run with the same promise.
+    const slow = { getOwnTeamSetup: () => new Promise(() => {}) };
+    const r2 = await hook({ client: slow, budgetMs: 100 });
+    assert.equal(r2.code, 0);
+    assert.deepEqual(r2.out, [
+      "Team memory acme/notes: not synced (took too long); your files are unchanged and the next session tries again.",
+    ]);
+    assert.ok(!existsSync(syncLockPath("acme")), "the lock is released either way");
+  })
+);
+
+scenario("TSU-M-40", () =>
+  withHome(async (home) => {
+    await writeCredentials("acme", KEY_ACME);
+    const v1 = { "a.md": mem("project", "A") };
+    const team = fakeTeam({ files: v1 });
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 1);
+    team.commit({ "a.md": mem("project", "A, changed by the team") });
+    await mkdir(dirname(syncLockPath("acme")), { recursive: true });
+    await writeFile(syncLockPath("acme"), JSON.stringify({ pid: 4242, at: TODAY().toISOString() }) + "\n");
+
+    const r = await hook({ client: team.client });
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.out, ["Team memory acme: a sync is already running."]);
+    assert.deepEqual(team.calls, [], "changes nothing");
+    assert.equal(await readFile(join(dir, "a.md"), "utf8"), mem("project", "A"));
+    assert.ok(existsSync(syncLockPath("acme")), "the first run's lock is left to it");
+
+    // A lock older than its staleness is taken over.
+    const r2 = await hook({ client: team.client, lockStaleMs: 0 });
+    assert.deepEqual(r2.out, ["Team memory acme/notes: version 2, 1 pulled, 0 pushed, 0 deleted."]);
+  })
+);
+
+// TSU-M-41 stays @proposed until the brief amendment says whether the waiting
+// line names its files; until then this holds what the contract's line says.
+test("hook lines: a conflict copy and a waiting file are named and counted, and no value is printed or logged", () =>
+  withHome(async (home) => {
+    await writeCredentials("acme", KEY_ACME);
+    const v1 = { "a.md": mem("project", "A, as last synced") };
+    const team = fakeTeam({ files: v1 });
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 1);
+    await write(dir, "a.md", mem("project", "A, changed here"));
+    await write(dir, "c.md", mem("project", `Call ${PHONE} for the reseller.`));
+    team.commit({ "a.md": mem("project", "A, changed by the team") });
+
+    const r = await hook({ client: team.client });
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(r.out, [
+      "Team memory acme/notes: version 2, 0 pulled, 0 pushed, 0 deleted.",
+      `  1 conflict copy to tidy in ${dir}: a.local-2026-11-01.md`,
+      "  1 file waits for you: run `npx -y @systemdox/mcp-server sync-memory --project notes` in your terminal.",
+    ]);
+    assert.ok(!r.text.includes(PHONE) && !r.text.includes("900456"), "no phone number is printed");
+    const log = await readFile(syncLogPath("acme"), "utf8");
+    assert.ok(!log.includes(PHONE) && !log.includes("900456"), "no phone number is logged");
+    assert.equal(await readFile(join(dir, "a.local-2026-11-01.md"), "utf8"), mem("project", "A, changed here"));
+  })
+);
+
+scenario("TSU-M-42", () =>
+  withHome((home, network) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const { client, team } = fakeSetup();
+      const kept = keptFolder(home);
+      const mine = Object.fromEntries([1, 2, 3, 4, 5].map((n) => [`kept-${n}.md`, mem("project", `Kept ${n}`)]));
+      for (const [p, c] of Object.entries(mine)) await write(kept, p, c);
+      const keptBefore = await tree(kept);
+
+      const { code, text, asked } = await setupRun(client, home);
+      assert.equal(code, 0, text);
+      const shown = text.slice(0, text.indexOf("Synced acme/notes"));
+      assert.match(shown, /^- the memories Claude Code kept for this checkout, imported into notes on its first sync:$/m);
+      assert.ok(shown.includes(`${kept}: 5 files to share`), `the folder and its 5 files were shown before answering:\n${shown}`);
+      assert.equal(asked.length, 1, "asked once, after it was shown");
+      for (const [p, c] of Object.entries(mine)) assert.equal(team.latest()[p], c, `the team memory holds ${p}`);
+      assert.deepEqual(await tree(kept), keptBefore, "that folder is unchanged");
+      assert.deepEqual(network, []);
+    })
+  )
+);
+
+scenario("TSU-M-43", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const { client, team } = fakeSetup();
+      const d = join(home, "d-copy");
+      await write(d, "x.md", mem("project", "x, as the D: copy has it"));
+      const dBefore = await tree(d);
+
+      const { code, text } = await setupRun(client, home, { importDirs: [d] });
+      assert.equal(code, 0, text);
+      assert.match(text, /^- the folder --import names, imported into notes on its first sync:$/m);
+      assert.ok(text.includes(`${d}: 1 file to share`), text);
+      assert.equal(team.latest()["x.md"], mem("project", "x, as the D: copy has it"), "the D: copy's file is in the team memory");
+      assert.deepEqual(await tree(d), dBefore, "the D: copy is unchanged");
+    })
+  )
+);
+
+scenario("TSU-M-44", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const { client, team } = fakeSetup();
+      const first = await setupRun(client, home);
+      assert.equal(first.code, 0, first.text);
+      await write(keptFolder(home), "old.md", mem("project", "An old note Claude Code kept"));
+
+      const again = await setupRun(client, home);
+      assert.equal(again.code, 0, again.text);
+      assert.ok(!("old.md" in team.latest()), "nothing is imported");
+      assert.ok(!again.text.includes("imported"), `no import is shown:\n${again.text}`);
+    })
+  )
+);
+
+// ── The hook run's safety (the code-vs-contract review of the build) ───────
+
+test("hook: a key for another workspace syncs nothing there, and says so", () =>
+  withHome(async (home) => {
+    const v1 = { "a.md": mem("project", "A") };
+    const team = fakeTeam({ files: v1 });
+    const other = { ...team.client, getOwnTeamSetup: async () => ({ workspace: "other", memory: [{ project: PROJECT, latestVersion: 1 }] }) };
+    await lastSynced(memoryDir(home), v1, 1);
+    const before = await tree(home);
+    const r = await hook({ client: other });
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.out, [
+      "Team memory acme/notes: not synced (the key is for another workspace); your files are unchanged and the next session tries again.",
+    ]);
+    assert.deepEqual(team.named("pushMemoryVersion"), []);
+    assert.ok(!existsSync(join(home, ".claude", "systemdox", "other")), "nothing is written for the other workspace");
+    const after = await tree(home);
+    for (const path of Object.keys(before)) assert.equal(after[path], before[path], `${path} did not change`);
+  })
+);
+
+test("hook: a project the team no longer serves is left as it is, never deleted", () =>
+  withHome(async (home) => {
+    const v1 = { "a.md": mem("project", "A"), "b.md": mem("project", "B") };
+    const team = fakeTeam(); // no version: the project answers 404
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 3);
+    const r = await hook({ client: team.client });
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.out, [
+      "Team memory acme/notes: not synced (the team memory could not be read); your files are unchanged and the next session tries again.",
+    ]);
+    assert.deepEqual(await texts(dir), v1, "every file is still there");
+    assert.equal((await readState("acme")).memory[PROJECT].version, 3, "the base is unchanged");
+  })
+);
+
+test("hook: two runs started together sync once; the other says a sync is running", () =>
+  withHome(async (home) => {
+    const v1 = { "a.md": mem("project", "A") };
+    const team = fakeTeam({ files: v1 });
+    await lastSynced(memoryDir(home), v1, 1);
+    team.commit({ "a.md": mem("project", "A, changed by the team") });
+    const [one, two] = await Promise.all([hook({ client: team.client }), hook({ client: team.client })]);
+    const lines = [...one.out, ...two.out].sort();
+    assert.deepEqual(lines, ["Team memory acme/notes: version 2, 1 pulled, 0 pushed, 0 deleted.", "Team memory acme: a sync is already running."].sort());
+    assert.equal(team.named("getMemory").length, 1, "one sync");
+    assert.ok(!existsSync(syncLockPath("acme")), "the lock is released");
+  })
+);
+
+test("hook: a folder it cannot write still ends as a success", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () =>
+  withHome(async (home) => {
+    const v1 = { "a.md": mem("project", "A") };
+    const team = fakeTeam({ files: v1 });
+    await lastSynced(memoryDir(home), v1, 1);
+    const ws = join(home, ".claude", "systemdox", "acme");
+    await chmod(ws, 0o555);
+    try {
+      const r = await hook({ client: team.client });
+      assert.equal(r.code, 0, "exit 0");
+      assert.ok(r.err.length <= 1, `one line at most: ${r.err.join("\n")}`);
+    } finally {
+      await chmod(ws, 0o755);
+    }
+  })
+);
+
+test("hook: a file held back for a secret is not counted as waiting for the member", () =>
+  withHome(async (home) => {
+    const v1 = { "a.md": mem("project", "A") };
+    const team = fakeTeam({ files: v1 });
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 1);
+    await write(dir, "s.md", mem("project", "Revoked: " + "pweb_prod" + "_key_" + "01KW0000000000000000"));
+    const r = await hook({ client: team.client });
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(r.out, ["Team memory acme/notes: version 1, 0 pulled, 0 pushed, 0 deleted."]);
+    assert.match(await readFile(syncLogPath("acme"), "utf8"), /s\.md: a secret/, "the log says why");
+  })
+);
+
+test("hook: a usage error is one line and exit 0", async () => {
+  const r = io();
+  assert.equal(await runSyncMemory(["--hook", "acme", "--project", "x"], r), 0);
+  assert.equal(r.lines.err.length, 1);
+  assert.match(r.lines.err[0], /--hook takes no other option/);
+});
+
+test("setup's import: the checkout's folder and its Git top folder are both looked for", () =>
+  withHome(async (home) => {
+    const checkout = join(home, "repo", "app");
+    const top = join(home, "repo");
+    const team = join(home, ".claude", "systemdox", "acme", "memory", PROJECT);
+    await write(claudeMemoryFolder(checkout), "a.md", mem("project", "A"));
+    await write(claudeMemoryFolder(top), "b.md", mem("project", "B"));
+    await write(claudeMemoryFolder(top), "u.md", mem("user", "About me"));
+    const found = await memoryImports(checkout, team, [], async () => top);
+    assert.deepEqual(found.map((i) => [i.folder, i.files, i.named]), [
+      [claudeMemoryFolder(checkout), 1, false],
+      [claudeMemoryFolder(top), 1, false], // the user memory is not counted: it is never shared
+    ]);
+    assert.equal(claudeMemoryFolder("/home/jo/git"), join(home, ".claude", "projects", "-home-jo-git", "memory"));
+    assert.equal(claudeMemoryFolder("C:\\Users\\jo\\git"), join(home, ".claude", "projects", "C--Users-jo-git", "memory"));
+  })
+);
+
+test("a sync removes the temporary file a killed run left, and never sends it", () =>
+  withHome(async (home) => {
+    const v1 = { "A.md": mem("project", "A") };
+    const team = fakeTeam({ files: v1 });
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 1);
+    await write(dir, "A.md.4242.k3x9.tmp", "half a fi");
+    team.commit({ "A.md": mem("project", "A, changed by the team") });
+    const { code, text } = await sync(team);
+    assert.equal(code, 0, text);
+    assert.ok(!existsSync(join(dir, "A.md.4242.k3x9.tmp")), "the leftover is gone");
+    assert.deepEqual(Object.keys(team.latest()), ["A.md"], "never sent");
+  })
+);
+
+test("sync_memory, with nobody at a terminal, leaves a project the team no longer serves as it is", () =>
+  withHome(async (home) => {
+    const v1 = { "a.md": mem("project", "A") };
+    const team = fakeTeam(); // the project answers 404
+    const dir = memoryDir(home);
+    await lastSynced(dir, v1, 2);
+    const registered = {};
+    registerTeamSetupTools({ registerTool: (name, meta, fn) => (registered[name] = { meta, fn }) }, team.client, { localFiles: true });
+    const result = await registered.sync_memory.fn({ project: PROJECT });
+    assert.ok(result.isError, "said, not done");
+    assert.match(result.content[0].text, /could not be read from SystemDox: nothing was changed/);
+    assert.deepEqual(await texts(dir), v1, "the file is still there");
+  })
+);
 
 test("team-setup.feature: a @proposed scenario has no test yet, and a @built one has one", () => {
   for (const s of SCENARIOS) {

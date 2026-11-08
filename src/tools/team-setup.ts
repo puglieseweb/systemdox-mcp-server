@@ -255,6 +255,8 @@ export function registerTeamSetupTools(
         dryRun: !!args.dryRun,
         client: apiClient as SyncClient,
         out: (...l: string[]) => lines.push(...l),
+        // Nobody is at a terminal: a project the team no longer serves is left as it is.
+        unattended: true,
       });
       return { ...text(lines.join("\n")), ...(code ? { isError: true } : {}) };
     }

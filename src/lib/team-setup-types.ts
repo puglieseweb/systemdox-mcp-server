@@ -55,6 +55,8 @@ export interface PluginVersion {
   skills: Record<string, number>;
   hookCommands?: string[];
   mcpServers?: { name: string; command?: string; args?: string[]; url?: string }[];
+  /** This version carries SystemDox's memory sync hooks (ADR-217 Amendment 3); absent before it. */
+  memoryHooks?: boolean;
   command: string;
 }
 

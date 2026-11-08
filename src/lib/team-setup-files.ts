@@ -8,7 +8,9 @@
  * - `~/.claude/systemdox/<workspace>/state.json`: the installed versions and
  *   hashes, each memory project's base manifest and version, the accepted
  *   SHA-256s. Never a value and never an answer about a person;
- * - `~/.claude/systemdox/<workspace>/plugin/<n>/`: plugin version n, unpacked.
+ * - `~/.claude/systemdox/<workspace>/plugin/<n>/`: plugin version n, unpacked;
+ * - `~/.claude/systemdox/<workspace>/sync-memory.log` and `sync.lock`: the hook
+ *   run's full report and its lock (ADR-217 Amendment 3).
  *
  * Every path starts at `homeDir()`, the one place the home folder is read, so
  * a test points HOME (USERPROFILE on Windows) at a temporary folder.
@@ -55,6 +57,17 @@ export function workspaceDir(workspace: string): string {
 
 export function statePath(workspace: string): string {
   return join(workspaceDir(workspace), "state.json");
+}
+
+/** `~/.claude/systemdox/<workspace>/sync-memory.log`: the full report of every
+ * `sync-memory --hook` run, newest last (ADR-217 Amendment 3). */
+export function syncLogPath(workspace: string): string {
+  return join(workspaceDir(workspace), "sync-memory.log");
+}
+
+/** `~/.claude/systemdox/<workspace>/sync.lock`: held while a hook run syncs. */
+export function syncLockPath(workspace: string): string {
+  return join(workspaceDir(workspace), "sync.lock");
 }
 
 export function pluginRoot(workspace: string): string {
