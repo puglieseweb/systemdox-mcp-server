@@ -231,10 +231,20 @@ npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--impo
   **Allow changes** ticked. A key made with the defaults is a **Reader** key:
   it reads the team setup, but SystemDox refuses its pushes (`SYD-A001`), so it
   cannot sync a team memory.
+- **The key is kept.** On a computer that already has a key (in
+  `SYSTEMDOX_API_KEY`, or stored by an earlier `setup`), `setup` shows it by its
+  last four characters, as the console lists keys: press Enter to keep it, or
+  paste a new key to replace it. A kept key that SystemDox refuses (revoked or
+  expired) is replaced once, at the same prompt.
 - **The workspace's first team memory needs a name.** With no team memory yet,
-  name it once with `--project <name>`. Without it, `setup` installs the plugin
-  and the instructions and sets up no memory. Later computers find the only
-  team memory by themselves, and with several they ask which is the checkout's.
+  `setup` asks for one at a terminal (Enter skips it), or take it from
+  `--project <name>`. Later computers find the only team memory by themselves,
+  and with several they ask which is the checkout's.
+- **A key that cannot sync is caught first.** Before it shows anything, `setup`
+  asks SystemDox whether the key may push the project (`blobs/missing` with no
+  hashes, which stores nothing). A Reader key may not: the memory is left out,
+  the plan says which key to make, and the plugin and the instructions are
+  still set up.
 
 - It first writes the SystemDox MCP server into your AI tool's config, without
   your key: the key is stored once, in `~/.claude/systemdox/credentials.json`

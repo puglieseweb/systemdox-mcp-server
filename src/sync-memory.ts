@@ -170,7 +170,9 @@ async function writeWhole(path: string, text: string): Promise<void> {
 /** A refused API call's status and SYD code. Read from the error rather than
  * by `instanceof`: each entry point bundles its own copy of the client, so
  * the class a caller's client throws need not be this module's. */
-function refusal(e: unknown): { status?: number; code?: string } {
+/** An API refusal's status and code, read from the error's own fields: a bundle
+ * may hold its own copy of SystemDoxApiError, so `instanceof` is not used. */
+export function refusal(e: unknown): { status?: number; code?: string } {
   if (!(e instanceof Error)) return {};
   const { status, code } = e as Partial<SystemDoxApiError>;
   return { status: typeof status === "number" ? status : undefined, code: typeof code === "string" ? code : undefined };

@@ -335,14 +335,14 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
 
   # A workspace's first team memory, and a key that can sync it (proposal item 31)
 
-  @proposed
+  @built
   Scenario: TSU-M-47 Setup in a workspace with no team memory asks the member to name one
     Given "acme" has a team plugin and no team memory, and the member names no project
     When the member runs setup at a terminal and names the team memory "acme-platform"
     Then what setup shows includes the team memory "acme-platform" as new, with the folder it syncs into
     And after the member answers yes, the first sync starts the team memory "acme-platform"
 
-  @proposed
+  @built
   Scenario: TSU-M-48 Setup with a key that cannot sync the team memory says which key to make, and sets up the rest
     Given the member's key reads the team setup of "acme" but may not change it
     When the member runs setup for the project "puglieseweb-ltd"

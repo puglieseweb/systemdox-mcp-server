@@ -16,7 +16,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { SystemDoxApiClient } from "./lib/api-client.js";
 import { API_URL_DEFAULT, requireHttpsApiUrl } from "./lib/config.js";
-import { credentialsPath, homeDir, isWorkspace, readCredentials, writeCredentials } from "./lib/team-setup-files.js";
+import { credentialsPath, homeDir, isWorkspace, readCredentials, shouldStoreKey, writeCredentials, type KeySource } from "./lib/team-setup-files.js";
 import type { TeamSetup } from "./lib/team-setup-types.js";
 import { setInJsonFile } from "./setup-team.js";
 
@@ -46,8 +46,67 @@ export interface McpSetupOptions {
 }
 
 export type McpSetupResult =
-  | { code: 0; apiKey: string; apiUrl: string; workspace: string }
+  | { code: 0; apiKey: string; apiUrl: string; workspace: string; keySource: KeySource }
   | { code: 1 };
+
+/** The key this computer already has, read as every command reads it
+ * (contract.md "The API key"): SYSTEMDOX_API_KEY, then credentials.json. */
+type StoredKey =
+  | { apiKey: string; source: "environment" | "credentials"; workspace?: string }
+  | { several: string[] };
+
+async function storedKey(env: NodeJS.ProcessEnv): Promise<StoredKey | undefined> {
+  const fromEnv = env.SYSTEMDOX_API_KEY?.trim();
+  if (fromEnv) return { apiKey: fromEnv, source: "environment" };
+  let credentials: Awaited<ReturnType<typeof readCredentials>>;
+  try {
+    credentials = await readCredentials();
+  } catch {
+    return undefined; // unreadable: setup asks, as on a new computer
+  }
+  const names = Object.keys(credentials)
+    .filter((ws) => isWorkspace(ws) && typeof credentials[ws]?.apiKey === "string" && credentials[ws].apiKey !== "")
+    .sort();
+  const pick = (ws: string): StoredKey => ({ apiKey: credentials[ws].apiKey, source: "credentials", workspace: ws });
+  if (names.length === 1) return pick(names[0]);
+  if (names.length > 1) {
+    const named = env.SYSTEMDOX_WORKSPACE;
+    return named && names.includes(named) ? pick(named) : { several: names };
+  }
+  return undefined;
+}
+
+/** The last four characters, as the console's list of keys shows them. */
+const lastFour = (apiKey: string) => `…${apiKey.slice(-4)}`;
+
+/**
+ * The key, as the member answers. A computer that already has one offers it:
+ * Enter keeps it, and a pasted key replaces it, so running setup again never
+ * needs a new key from the console. A new computer is asked for one.
+ */
+async function chooseKey(opts: McpSetupOptions): Promise<{ apiKey: string; source: KeySource } | undefined> {
+  const stored = await storedKey(opts.env ?? process.env);
+  if (!stored) {
+    const typed = (await opts.ask("  Enter your SystemDox API key: ")).trim();
+    return typed ? { apiKey: typed, source: "prompt" } : undefined;
+  }
+  if ("several" in stored) {
+    const answer = (
+      await opts.ask(`  Keys are stored for ${stored.several.join(", ")}. Type the workspace whose key to keep, or paste a new key: `)
+    ).trim();
+    if (!answer) return undefined;
+    if (stored.several.includes(answer)) {
+      return { apiKey: (await readCredentials())[answer].apiKey, source: "credentials" };
+    }
+    return { apiKey: answer, source: "prompt" };
+  }
+  const where =
+    stored.source === "environment"
+      ? "the key in SYSTEMDOX_API_KEY"
+      : `the key stored for ${stored.workspace}`;
+  const answer = (await opts.ask(`  Press Enter to keep ${where} (${lastFour(stored.apiKey)}), or paste a new key: `)).trim();
+  return answer ? { apiKey: answer, source: "prompt" } : { apiKey: stored.apiKey, source: stored.source };
+}
 
 /** A `${NAME}` reference to the member's own environment: not a key. */
 const isReference = (value: unknown) => typeof value === "string" && /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value);
@@ -166,13 +225,16 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
   const { out, err, ask } = opts;
   out("\n  SystemDox MCP Server Setup\n");
 
-  // 1. The key and the API URL.
-  const apiKey = (await ask("  Enter your SystemDox API key: ")).trim();
-  if (!apiKey) {
+  // 1. The key (the one this computer has, kept with Enter) and the API URL.
+  const chosen = await chooseKey(opts);
+  if (!chosen) {
     err("\n  Error: API key is required.\n  Generate one at your SystemDox settings page.\n");
     return { code: 1 };
   }
-  const apiUrl = (await ask(`  API URL [${API_URL_DEFAULT}]: `)).trim() || API_URL_DEFAULT;
+  let { apiKey, source: keySource } = chosen;
+  // A kept key goes where this shell already points: Enter never sends it elsewhere.
+  const urlDefault = (opts.env ?? process.env).SYSTEMDOX_API_URL?.trim() || API_URL_DEFAULT;
+  const apiUrl = (await ask(`  API URL [${urlDefault}]: `)).trim() || urlDefault;
 
   // Fail closed on a non-https API URL: the key is sent as a bearer token, so an
   // http:// URL would leak it in cleartext. Reject before writing/validating.
@@ -185,9 +247,22 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
 
   // 2. Validate, and name the key's workspace (where credentials.json keeps it).
   out("\n  Validating API key...");
-  if (!(await (opts.validateKey ?? validateApiKey)(apiKey, apiUrl))) {
-    err("\n  Error: Invalid API key or cannot reach the SystemDox API.\n  Check your key and try again.\n");
-    return { code: 1 };
+  const validate = opts.validateKey ?? validateApiKey;
+  if (!(await validate(apiKey, apiUrl))) {
+    if (keySource === "prompt") {
+      err("\n  Error: Invalid API key or cannot reach the SystemDox API.\n  Check your key and try again.\n");
+      return { code: 1 };
+    }
+    // A kept key that no longer works (revoked or expired): one new key, once.
+    const replacement = (
+      await ask(`  The key you kept (${lastFour(apiKey)}) did not work: it may be revoked or expired, or SystemDox could not be reached. Paste a new key, or press Enter to stop: `)
+    ).trim();
+    if (!replacement || !(await validate(replacement, apiUrl))) {
+      err("\n  Error: Invalid API key or cannot reach the SystemDox API.\n  Check your key and try again.\n");
+      return { code: 1 };
+    }
+    apiKey = replacement;
+    keySource = "prompt";
   }
   out("  API key validated successfully.\n");
   const workspace = await keyWorkspace(opts, apiKey, apiUrl);
@@ -215,7 +290,10 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
 
   // 4. The key, once: credentials.json. Then the server entries, without it.
   try {
-    if ((await readCredentials())[workspace]?.apiKey !== apiKey) await writeCredentials(workspace, apiKey);
+    if (shouldStoreKey(keySource, (await readCredentials())[workspace]?.apiKey, apiKey)) await writeCredentials(workspace, apiKey);
+    if (keySource === "prompt" && (opts.env ?? process.env).SYSTEMDOX_API_KEY?.trim()) {
+      out("  SYSTEMDOX_API_KEY is set in this shell and is read before the stored key: unset it, or the new key is not used.");
+    }
     // Claude Code watches a skills folder only if it existed when the session
     // started. Made now, a new computer's first session loads a skill as soon
     // as it installs one.
@@ -244,5 +322,5 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
       "  get_guardrails and create_guardrail remain registered as deprecated\n" +
       "  aliases of get_checks and create_check — existing configs keep working.\n"
   );
-  return { code: 0, apiKey, apiUrl, workspace };
+  return { code: 0, apiKey, apiUrl, workspace, keySource };
 }

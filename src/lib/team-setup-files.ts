@@ -120,6 +120,20 @@ export async function restrictToMember(path: string): Promise<void> {
   }
 }
 
+/** Where the key setup goes on with came from: given now, or kept. */
+export type KeySource = "prompt" | "environment" | "credentials";
+
+/**
+ * Whether credentials.json takes this key (contract.md step 3.1): a key the
+ * member gave now replaces what is stored; a key from the environment is
+ * stored only where the workspace has none; a key kept from the file is never
+ * written back.
+ */
+export function shouldStoreKey(source: KeySource, stored: string | undefined, apiKey: string): boolean {
+  if (source === "prompt") return stored !== apiKey;
+  return source === "environment" && !stored;
+}
+
 /** Save the key for `workspace` in credentials.json, readable by the member alone. */
 export async function writeCredentials(workspace: string, apiKey: string): Promise<void> {
   if (!isWorkspace(workspace)) throw new Error(`${JSON.stringify(workspace)} is not a workspace name`);

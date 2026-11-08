@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import { crc32, deflateRawSync } from "node:zlib";
 import { SystemDoxApiClient, SystemDoxApiError } from "../dist/lib/api-client.js";
 import { hookLines, runSyncMemory, syncMemory } from "../dist/sync-memory.js";
-import { claudeMemoryFolder, memoryImports, parseSetupArgs, runTeamSetup, setJsonMember, withImportBlock } from "../dist/setup-team.js";
+import { claudeMemoryFolder, memoryImports, parseSetupArgs, runTeamSetup, runTeamSetupCommand, setJsonMember, withImportBlock } from "../dist/setup-team.js";
 import { setupMcpServer } from "../dist/setup-mcp.js";
 import { findPersonValues, findSecrets, normalise, rewriteHomePaths } from "../dist/lib/person-values.js";
 import {
@@ -2241,6 +2241,326 @@ test("sync_memory, with nobody at a terminal, leaves a project the team no longe
     assert.match(result.content[0].text, /could not be read from SystemDox: nothing was changed/);
     assert.deepEqual(await texts(dir), v1, "the file is still there");
   })
+);
+
+// ── A workspace's first team memory, and a key that can sync it (item 31) ──
+
+/** fakeSetup with the push recorded by project name, and `blobs/missing` answering as `probe` says. */
+function setupRecording({ memory, probe } = {}) {
+  const s = fakeSetup({ memory });
+  const pushed = [];
+  const probes = [];
+  s.client = {
+    ...s.client,
+    pushMemoryVersion: async (ws, project, body) => {
+      pushed.push(project);
+      return s.team.client.pushMemoryVersion(ws, project, body);
+    },
+    findMissingBlobs: async (ws, project, hashes) => {
+      if (!hashes.length) {
+        probes.push(project);
+        if (probe) throw probe;
+      }
+      return s.team.client.findMissingBlobs(ws, project, hashes);
+    },
+  };
+  return { ...s, pushed, probes };
+}
+
+const autoMemory = async (home) => {
+  try {
+    return JSON.parse(await readFile(join(home, "checkout", ".claude", "settings.local.json"), "utf8")).autoMemoryDirectory;
+  } catch {
+    return undefined;
+  }
+};
+
+/** `line` is printed once, and no item of the plan comes after it. */
+function planEndsWith(text, line) {
+  const lines = text.split("\n");
+  const at = lines.indexOf(line);
+  assert.ok(at >= 0, `the plan holds ${line}:\n${text}`);
+  assert.equal(lines.filter((l) => l === line).length, 1, "once");
+  assert.ok(!lines.slice(at + 1).some((l) => l.startsWith("- ")), `nothing of the plan follows it:\n${text}`);
+}
+
+const NAME_QUESTION = /^acme has no team memory yet\. Name one for this checkout \(lower case letters, digits and -\), or press Enter for none: $/;
+const NO_MEMORY_LINE = "No team memory: run setup again with --project <name> to start one.";
+const KEY_LINE = (project) =>
+  `The key cannot sync the team memory ${project}: create a key in Settings › API keys with Developer or Architect access on All spaces, with Allow changes ticked, then run setup again.`;
+
+scenario("TSU-M-47", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      await write(keptFolder(home), "build.md", mem("project", "Run the whole suite before a release."));
+      const { client, pushed, team } = setupRecording({ memory: null });
+
+      const { code, text, asked } = await setupRun(client, home, { answers: ["acme-platform", "y"] });
+      assert.equal(code, 0, text);
+      assert.match(asked[0], NAME_QUESTION, "asked for the name before anything is shown");
+      const folder = join(home, ".claude", "systemdox", "acme", "memory", "acme-platform");
+      const shown = text.slice(0, text.indexOf("Synced acme/acme-platform"));
+      assert.match(shown, /^- the team memory acme-platform:$/m);
+      assert.ok(shown.includes(`acme-platform: new, synced into ${folder}`), shown);
+      assert.equal(asked.length, 2, "the name, then one yes");
+      assert.deepEqual(pushed, ["acme-platform"], "the first sync starts the team memory acme-platform");
+      assert.equal(team.latest()["build.md"], mem("project", "Run the whole suite before a release."));
+      assert.equal(await autoMemory(home), folder);
+    })
+  )
+);
+
+scenario("TSU-M-48", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const { client, pushed, probes, team } = setupRecording({ probe: apiError(403, "SYD-A001") });
+
+      const { code, text, asked } = await setupRun(client, home, { project: "puglieseweb-ltd" });
+      assert.equal(code, 0, text);
+      assert.deepEqual(probes, ["puglieseweb-ltd"], "SystemDox was asked whether the key may push");
+      assert.doesNotMatch(text, /^- the team memory |^- autoMemoryDirectory|imported into/m, "the team memory is left out");
+      planEndsWith(text, KEY_LINE("puglieseweb-ltd"));
+      assert.match(text, /Developer or Architect access on All spaces, with Allow changes ticked/);
+      assert.equal(asked.length, 1, "one yes");
+      assert.equal(await readFile(join(home, ".claude", "systemdox", "acme", "CLAUDE.md"), "utf8"), INSTRUCTIONS_V1, "the instructions are set up");
+      assert.ok(JSON.parse(await readFile(join(home, ".claude", "settings.json"), "utf8")).extraKnownMarketplaces["systemdox-acme"], "and the plugin's marketplace");
+      assert.equal(await autoMemory(home), undefined, "no memory folder is set");
+      assert.deepEqual(pushed, []);
+      assert.deepEqual(team.named("getMemory"), [], "no sync");
+    })
+  )
+);
+
+test("setup's first team memory: Enter, or a name asked for twice, sets up no memory and says how to start one", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const none = setupRecording({ memory: null });
+      const r = await setupRun(none.client, home, { answers: ["", "y"] });
+      assert.equal(r.code, 0, r.text);
+      planEndsWith(r.text, NO_MEMORY_LINE);
+      assert.equal(await autoMemory(home), undefined);
+      assert.deepEqual(none.pushed, []);
+      assert.deepEqual(none.probes, [], "no project, no question to SystemDox");
+
+      const twice = setupRecording({ memory: null });
+      const t = await setupRun(twice.client, home, { answers: ["Bad Name", "still bad!", "y"] });
+      assert.equal(t.code, 0, t.text);
+      assert.match(t.asked[0], NAME_QUESTION);
+      assert.match(t.asked[1], NAME_QUESTION, "asked once more");
+      assert.match(t.text, /^Bad Name is not a project name \(lower case letters, digits and -\)\.$/m);
+      planEndsWith(t.text, NO_MEMORY_LINE);
+      assert.deepEqual(twice.pushed, []);
+    })
+  )
+);
+
+test("setup's first team memory: a wrong name then a right one starts it", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      await write(keptFolder(home), "a.md", mem("project", "A"));
+      const s = setupRecording({ memory: null });
+      const r = await setupRun(s.client, home, { answers: ["Acme Platform", "acme-platform", "y"] });
+      assert.equal(r.code, 0, r.text);
+      assert.deepEqual(s.pushed, ["acme-platform"]);
+    })
+  )
+);
+
+test("setup's first team memory: with no terminal nobody is asked a name, and the plan says how to start one", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const s = setupRecording({ memory: null });
+      const r = await setupRun(s.client, home, { answers: ["y"], isTerminal: false });
+      assert.equal(r.code, 0, r.text);
+      assert.equal(r.asked.length, 1, "only the yes");
+      assert.doesNotMatch(r.asked[0], /no team memory yet/);
+      planEndsWith(r.text, NO_MEMORY_LINE);
+
+      const unattended = setupRecording({ memory: null });
+      const u = await setupRun(unattended.client, home, { answers: [], yes: true, isTerminal: false });
+      assert.equal(u.code, 0, u.text); // accepted before: nothing new to list
+      assert.match(u.text, /^No team memory: run setup again with --project <name> to start one\.$/m);
+    })
+  )
+);
+
+test("setup's key check: a space the key cannot read leaves the memory out; any other answer lets it go ahead", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const unreadable = setupRecording({ probe: apiError(404, "SYD-K016") });
+      const r = await setupRun(unreadable.client, home);
+      assert.equal(r.code, 0, r.text);
+      planEndsWith(r.text, KEY_LINE(PROJECT));
+      assert.equal(await autoMemory(home), undefined);
+
+      const busy = setupRecording({ probe: apiError(503, "SYD-X500") });
+      const b = await setupRun(busy.client, home);
+      assert.equal(b.code, 0, b.text);
+      assert.ok(!b.text.includes("The key cannot sync"), b.text);
+      assert.equal(await autoMemory(home), memoryDir(home), "the memory goes ahead");
+    })
+  )
+);
+
+// ── setup keeps the key this computer already has ─────────────────────────
+
+/** setup's first step with a validator that accepts `good` keys only. */
+async function keyStep(home, answers, { good = [KEY_ACME], env = {} } = {}) {
+  const lines = [];
+  const t = terminal(...answers);
+  const result = await setupMcpServer({
+    out: (l) => lines.push(l),
+    err: (l) => lines.push(l),
+    ask: t.ask,
+    cwd: join(home, "checkout"),
+    env,
+    validateKey: async (key) => good.includes(key),
+    client: () => ({ getOwnTeamSetup: async () => ({ workspace: "acme" }) }),
+  });
+  return { ...result, text: lines.join("\n"), asked: t.asked };
+}
+
+test("setup again: Enter keeps the stored key, so no new key is needed, and the key is never printed", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_ACME);
+    const r = await keyStep(home, ["", "", "all"]);
+    assert.equal(r.code, 0, r.text);
+    assert.equal(r.apiKey, KEY_ACME);
+    assert.equal(r.keySource, "credentials");
+    assert.equal(r.asked[0], `  Press Enter to keep the key stored for acme (…${KEY_ACME.slice(-4)}), or paste a new key: `);
+    assert.ok(!r.text.includes(KEY_ACME) && !r.asked.join("").includes(KEY_ACME), "only the last four characters are shown");
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
+  })
+);
+
+test("setup again: a pasted key replaces the stored one", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_OTHER);
+    const r = await keyStep(home, [KEY_ACME, "", "all"]);
+    assert.equal(r.code, 0, r.text);
+    assert.equal(r.keySource, "prompt");
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
+  })
+);
+
+test("setup again: a kept key that is refused asks for one new key, once", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_OTHER); // revoked or expired
+    const r = await keyStep(home, ["", "", KEY_ACME, "all"]);
+    assert.equal(r.code, 0, r.text);
+    assert.equal(r.asked[2], "  The key you kept (…0002) did not work: it may be revoked or expired, or SystemDox could not be reached. Paste a new key, or press Enter to stop: ");
+    assert.equal(r.apiKey, KEY_ACME);
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
+
+    await writeCredentials("acme", KEY_OTHER);
+    const refused = await keyStep(home, ["", "", "also-" + "refused"]);
+    assert.equal(refused.code, 1, "a second refusal stops, changing nothing");
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_OTHER } });
+  })
+);
+
+test("setup again: SYSTEMDOX_API_KEY is offered before credentials.json, and several stored keys are chosen by workspace", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_OTHER);
+    const fromEnv = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_API_KEY: KEY_ACME } });
+    assert.equal(fromEnv.code, 0, fromEnv.text);
+    assert.equal(fromEnv.keySource, "environment");
+    assert.equal(fromEnv.apiKey, KEY_ACME, "the environment comes first");
+    assert.match(fromEnv.asked[0], /^  Press Enter to keep the key in SYSTEMDOX_API_KEY \(…0001\), or paste a new key: $/);
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_OTHER } }, "a key the workspace already has stored is not overwritten");
+
+    await writeCredentials("acme", KEY_ACME);
+    await writeCredentials("globex", KEY_OTHER);
+    const several = await keyStep(home, ["acme", "", "all"]);
+    assert.equal(several.code, 0, several.text);
+    assert.equal(several.asked[0], "  Keys are stored for acme, globex. Type the workspace whose key to keep, or paste a new key: ");
+    assert.equal(several.apiKey, KEY_ACME);
+    assert.equal(several.keySource, "credentials");
+
+    const named = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_WORKSPACE: "acme" } });
+    assert.equal(named.code, 0, named.text);
+    assert.equal(named.apiKey, KEY_ACME, "SYSTEMDOX_WORKSPACE chooses among several");
+    assert.match(named.asked[0], /key stored for acme/);
+  })
+);
+
+test("setup again: a key kept from the file is never written back, under any name", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("old-name", KEY_ACME); // the API now names the workspace acme
+    const r = await keyStep(home, ["", "", "all"]);
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { "old-name": { apiKey: KEY_ACME } });
+  })
+);
+
+test("setup again: a new key pasted while SYSTEMDOX_API_KEY is set says the variable is read first", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    const r = await keyStep(home, [KEY_ACME, "", "all"], { env: { SYSTEMDOX_API_KEY: KEY_OTHER } });
+    assert.equal(r.code, 0, r.text);
+    assert.match(r.text, /SYSTEMDOX_API_KEY is set in this shell and is read before the stored key: unset it, or the new key is not used\./);
+    const kept = await keyStep(home, ["", "", "all"], { good: [KEY_OTHER], env: { SYSTEMDOX_API_KEY: KEY_OTHER } });
+    assert.doesNotMatch(kept.text, /read before the stored key/, "nothing to say when the variable's key is the one kept");
+  })
+);
+
+test("setup again: Enter at the API URL keeps where this shell points, so a kept key goes nowhere else", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_ACME);
+    const r = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_API_URL: "https://preprod.example.com/systemdox" } });
+    assert.equal(r.code, 0, r.text);
+    assert.equal(r.apiUrl, "https://preprod.example.com/systemdox");
+    assert.equal(r.asked[1], "  API URL [https://preprod.example.com/systemdox]: ");
+  })
+);
+
+test("the team setup receives where the key came from: a kept key is not written over the stored one", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      await writeCredentials("acme", KEY_OTHER);
+      const { client } = fakeSetup();
+      const t = terminal("y");
+      const code = await runTeamSetupCommand(
+        { yes: false, overwrite: false, importDirs: [] },
+        { apiKey: KEY_ACME, apiUrl: "https://example.com", keySource: "credentials" },
+        { out: () => {}, ask: t.ask, terminal: true, client, cwd: join(home, "checkout"), now: TODAY, gitTop: async () => undefined }
+      );
+      assert.equal(code, 0);
+      assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_OTHER } });
+    })
+  )
+);
+
+test("setup's key check: what the member accepted of the memory stays accepted through a run that left it out", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      const good = setupRecording();
+      const first = await setupRun(good.client, home);
+      assert.equal(first.code, 0, first.text);
+
+      const refused = setupRecording({ probe: apiError(403, "SYD-A001") });
+      const noKey = await setupRun(refused.client, home, { answers: [], yes: true, isTerminal: false });
+      assert.equal(noKey.code, 0, noKey.text);
+
+      const again = setupRecording();
+      const back = await setupRun(again.client, home, { answers: [], yes: true, isTerminal: false });
+      assert.equal(back.code, 0, `the memory items need nobody at a terminal:\n${back.text}`);
+    })
+  )
 );
 
 test("team-setup.feature: a @proposed scenario has no test yet, and a @built one has one", () => {

@@ -45,12 +45,14 @@ import {
   readCredentials,
   readState,
   removeFolder,
+  shouldStoreKey,
   updateState,
   workspaceDir,
   writeCredentials,
+  type KeySource,
 } from "./lib/team-setup-files.js";
 import type { PluginVersion, TeamSetup } from "./lib/team-setup-types.js";
-import { syncMemory, type SyncClient } from "./sync-memory.js";
+import { refusal, syncMemory, type SyncClient } from "./sync-memory.js";
 
 export const SETUP_USAGE =
   "Usage: systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]";
@@ -71,7 +73,7 @@ export interface TeamSetupOptions extends TeamSetupArgs {
   client: TeamSetupClient;
   apiKey: string;
   /** Where the key came from: a key read from credentials.json is not written back. */
-  keySource: "prompt" | "environment" | "credentials";
+  keySource: KeySource;
   out: (line: string) => void;
   /** Asks the member a question. Absent: nobody can answer. */
   ask?: (question: string) => Promise<string>;
@@ -427,15 +429,55 @@ const hookLines = (p: PluginVersion) => p.hookCommands ?? [];
 const mcpLines = (p: PluginVersion) =>
   (p.mcpServers ?? []).map((s) => `${s.name}: ${s.url ?? [s.command, ...(s.args ?? [])].filter(Boolean).join(" ")}`);
 
+/** The plan's last line when the workspace has no team memory and none was named (contract.md, item 31). */
+export const NO_TEAM_MEMORY_LINE = "No team memory: run setup again with --project <name> to start one.";
+
+/** The plan's last line when the key may not push the project (contract.md, item 31). */
+export const keyCannotSyncLine = (project: string) =>
+  `The key cannot sync the team memory ${project}: create a key in Settings › API keys with Developer or ` +
+  "Architect access on All spaces, with Allow changes ticked, then run setup again.";
+
 async function chooseProject(own: TeamSetup, opts: TeamSetupOptions, canAsk: boolean): Promise<string | undefined> {
   if (opts.project) return opts.project;
-  if (own.memory.length <= 1) return own.memory[0]?.project;
+  if (own.memory.length === 0) {
+    // The workspace's first team memory needs a name: a member at a terminal
+    // is asked for it; an invalid one is asked once more, then counts as none.
+    if (!canAsk || !opts.terminal) return undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const answer = (
+        await opts.ask!(
+          `${own.workspace} has no team memory yet. Name one for this checkout (lower case letters, digits and -), or press Enter for none: `
+        )
+      ).trim();
+      if (!answer) return undefined;
+      if (isWorkspace(answer)) return answer;
+      opts.out(`${answer} is not a project name (lower case letters, digits and -).`);
+    }
+    return undefined;
+  }
+  if (own.memory.length === 1) return own.memory[0].project;
   const names = own.memory.map((m) => m.project);
   const usage = `${own.workspace} has ${names.length} team memories (${names.join(", ")}): name this checkout's with --project.`;
   if (!canAsk) throw new SetupFailed(usage);
   const answer = (await opts.ask!(`Which team memory is this checkout's? (${names.join(", ")}) `)).trim();
   if (!names.includes(answer)) throw new SetupFailed(usage);
   return answer;
+}
+
+/**
+ * Whether the key may push `project`: `blobs/missing` with no hashes reads and
+ * stores nothing. Only SYD-A001 (no build:write on the project's space) and
+ * SYD-K016 (a space the key cannot read) say no; any other answer lets the
+ * memory go ahead, and its first sync reports its own errors.
+ */
+async function keyMayPush(client: TeamSetupClient, ws: string, project: string): Promise<boolean> {
+  try {
+    await client.findMissingBlobs(ws, project, []);
+  } catch (e) {
+    const { status, code } = refusal(e);
+    if ((status === 403 && code === "SYD-A001") || (status === 404 && code === "SYD-K016")) return false;
+  }
+  return true;
 }
 
 /**
@@ -475,7 +517,16 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
     const accepted = new Set(state.accepted ?? []);
     const update = accepted.size > 0;
     const canAsk = !!opts.ask && !(opts.yes && !opts.terminal);
-    const project = await chooseProject(own, opts, canAsk);
+    let project = await chooseProject(own, opts, canAsk);
+    let memoryNote: string | undefined = !project && !own.memory.length ? NO_TEAM_MEMORY_LINE : undefined;
+    let memoryLeftOut = false;
+    if (project && !(await keyMayPush(opts.client, ws, project))) {
+      // A key that may not push (a Reader key, the console's default): the
+      // memory is left out, and the plugin and the instructions go ahead.
+      memoryNote = keyCannotSyncLine(project);
+      project = undefined;
+      memoryLeftOut = true;
+    }
 
     // 2. What it will add, and what of it the member has not accepted yet.
     const marketplaceName = `systemdox-${ws}`;
@@ -572,6 +623,7 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
           out(`- ${i.name}:`);
           for (const l of i.lines) out(`    ${l}`);
         }
+        if (memoryNote) out(memoryNote);
         return 4;
       }
       out(update ? `What changed in the team setup of ${ws}:` : `The team setup of ${ws} will add:`);
@@ -579,15 +631,18 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
         out(`- ${i.name}:`);
         for (const l of i.lines) out(`    ${l}`);
       }
+      if (memoryNote) out(memoryNote);
       const answer = (await opts.ask!("Set this up? [y/N] ")).trim();
       if (!/^y(es)?$/i.test(answer)) {
         out("Nothing was changed.");
         return 4;
       }
+    } else if (memoryNote) {
+      out(memoryNote);
     }
 
     // 3. Do, in this order.
-    if (opts.keySource !== "credentials" && (await readCredentials())[ws]?.apiKey !== opts.apiKey) {
+    if (shouldStoreKey(opts.keySource, (await readCredentials())[ws]?.apiKey, opts.apiKey)) {
       await writeCredentials(ws, opts.apiKey);
     }
 
@@ -633,7 +688,9 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
       await setInJsonFile(localSettings, ["autoMemoryDirectory"], memoryFolder);
     }
     await updateState(ws, (s) => {
-      s.accepted = [...new Set(items.map((i) => i.sha256))];
+      // A run that left the memory out never showed its items, so what the
+      // member accepted of them earlier stays accepted.
+      s.accepted = [...new Set([...(memoryLeftOut ? (s.accepted ?? []) : []), ...items.map((i) => i.sha256)])];
     });
     if (project) {
       const code = await syncMemory({
@@ -692,9 +749,9 @@ async function removeOldPlugins(workspace: string): Promise<void> {
 /** The command, after the MCP server step: the key and URL that step took. */
 export async function runTeamSetupCommand(
   args: TeamSetupArgs,
-  key: { apiKey: string; apiUrl: string },
+  key: { apiKey: string; apiUrl: string; keySource?: TeamSetupOptions["keySource"] },
   io: { out: (line: string) => void; ask?: (question: string) => Promise<string>; terminal: boolean }
 ): Promise<number> {
   const client = new SystemDoxApiClient({ apiKey: key.apiKey, apiUrl: key.apiUrl, cacheTtlMs: 0, defaultOrg: undefined });
-  return runTeamSetup({ ...args, client, apiKey: key.apiKey, keySource: "prompt", ...io });
+  return runTeamSetup({ ...args, client, apiKey: key.apiKey, keySource: key.keySource ?? "prompt", ...io });
 }
