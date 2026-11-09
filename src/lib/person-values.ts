@@ -174,6 +174,14 @@ export function findPersonValues(text: string): Finding[] {
   return found.sort((a, b) => a.start - b.start);
 }
 
+/** What replaces a home folder at `start`: `~`, or `$HOME` inside double
+ * quotes, where a shell does not expand `~`. */
+export function homeStandIn(text: string, start: number): string {
+  const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+  const quotes = (text.slice(lineStart, start).match(/"/g) ?? []).length;
+  return quotes % 2 === 1 ? "$HOME" : "~";
+}
+
 /** `text` with every home-folder path found replaced by `~`: what the sync
  * sends instead (`C:\Users\jbloggs\.claude` → `~\.claude`). */
 export function rewriteHomePaths(text: string): string {
@@ -181,7 +189,7 @@ export function rewriteHomePaths(text: string): string {
   let last = 0;
   for (const f of findPersonValues(text)) {
     if (f.kind !== HOME_PATH) continue;
-    out += text.slice(last, f.start) + "~";
+    out += text.slice(last, f.start) + homeStandIn(text, f.start);
     last = f.end;
   }
   return out + text.slice(last);

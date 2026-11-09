@@ -422,6 +422,15 @@ export interface ValueGroup {
   first: { path: string; line: number; text: string };
 }
 
+/** The words around `value` in `line`: enough to recognise it, however long the line is. */
+export function around(line: string, value: string, reach = 80): string {
+  const at = line.indexOf(value);
+  if (at < 0) return line.length > reach * 2 ? `${line.slice(0, reach * 2)}…` : line;
+  const from = Math.max(0, at - reach);
+  const to = Math.min(line.length, at + value.length + reach);
+  return `${from > 0 ? "…" : ""}${line.slice(from, to)}${to < line.length ? "…" : ""}`;
+}
+
 export const groupKey = (kind: string, normalised: string) => `${kind}:${normalised}`;
 
 /** Every phone number and email address in `files`, grouped by normalised

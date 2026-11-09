@@ -36,6 +36,10 @@ export interface McpSetupOptions {
   out: (line: string) => void;
   err: (line: string) => void;
   ask: (question: string) => Promise<string>;
+  /** Asks without showing the answer (default: `ask`). Every key is asked for with it. */
+  askSecret?: (question: string) => Promise<string>;
+  /** `setup --choose`: ask the API URL and the targets again on a computer that already has a key. */
+  choose?: boolean;
   /** The folder whose project configs are offered (default: the current folder). */
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -84,28 +88,30 @@ const lastFour = (apiKey: string) => `…${apiKey.slice(-4)}`;
  * Enter keeps it, and a pasted key replaces it, so running setup again never
  * needs a new key from the console. A new computer is asked for one.
  */
-async function chooseKey(opts: McpSetupOptions): Promise<{ apiKey: string; source: KeySource } | undefined> {
+async function chooseKey(opts: McpSetupOptions): Promise<{ apiKey: string; source: KeySource; hadKey: boolean } | undefined> {
+  const askKey = opts.askSecret ?? opts.ask;
   const stored = await storedKey(opts.env ?? process.env);
   if (!stored) {
-    const typed = (await opts.ask("  Enter your SystemDox API key: ")).trim();
-    return typed ? { apiKey: typed, source: "prompt" } : undefined;
+    opts.out("  No key on this computer yet. In the console: Settings › API keys › Key for Claude Code team setup.");
+    const typed = (await askKey("  Paste your SystemDox API key (it is not shown): ")).trim();
+    return typed ? { apiKey: typed, source: "prompt", hadKey: false } : undefined;
   }
   if ("several" in stored) {
     const answer = (
-      await opts.ask(`  Keys are stored for ${stored.several.join(", ")}. Type the workspace whose key to keep, or paste a new key: `)
+      await askKey(`  Keys are stored for ${stored.several.join(", ")}. Type the workspace whose key to keep, or paste a new key (it is not shown): `)
     ).trim();
     if (!answer) return undefined;
     if (stored.several.includes(answer)) {
-      return { apiKey: (await readCredentials())[answer].apiKey, source: "credentials" };
+      return { apiKey: (await readCredentials())[answer].apiKey, source: "credentials", hadKey: true };
     }
-    return { apiKey: answer, source: "prompt" };
+    return { apiKey: answer, source: "prompt", hadKey: true };
   }
   const where =
     stored.source === "environment"
       ? "the key in SYSTEMDOX_API_KEY"
       : `the key stored for ${stored.workspace}`;
-  const answer = (await opts.ask(`  Press Enter to keep ${where} (${lastFour(stored.apiKey)}), or paste a new key: `)).trim();
-  return answer ? { apiKey: answer, source: "prompt" } : { apiKey: stored.apiKey, source: stored.source };
+  const answer = (await askKey(`  Press Enter to keep ${where} (${lastFour(stored.apiKey)}), or paste a new key (it is not shown): `)).trim();
+  return answer ? { apiKey: answer, source: "prompt", hadKey: true } : { apiKey: stored.apiKey, source: stored.source, hadKey: true };
 }
 
 /** A `${NAME}` reference to the member's own environment: not a key. */
@@ -201,6 +207,36 @@ export async function writeServerEntry(path: string, apiUrl: string, workspace?:
   return heldKey;
 }
 
+/** The `systemdox` entry at `path`, or undefined when there is none or the file cannot be read. */
+function entryOf(path: string): unknown {
+  try {
+    return currentEntry(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The API URL an entry names, when it names one. */
+function entryUrl(target: McpConfigTarget): string | undefined {
+  const entry = entryOf(target.path) as { env?: Record<string, unknown> } | undefined;
+  const url = entry?.env?.SYSTEMDOX_API_URL;
+  return typeof url === "string" && url && !isReference(url) ? url : undefined;
+}
+
+/**
+ * The API URL this member configured for themselves. A project's own file is
+ * never followed: it can be committed by anyone, and the key is sent to this
+ * address without a question.
+ */
+function configuredUrl(targets: McpConfigTarget[]): string | undefined {
+  for (const t of targets) {
+    if (/\(project\)/.test(t.name)) continue;
+    const url = entryUrl(t);
+    if (url) return url;
+  }
+  return undefined;
+}
+
 /** The key's workspace: `GET /team-setup` names it; when that fails,
  * SYSTEMDOX_WORKSPACE, or the member types it. */
 async function keyWorkspace(opts: McpSetupOptions, apiKey: string, apiUrl: string): Promise<string | undefined> {
@@ -230,6 +266,7 @@ async function keyWorkspace(opts: McpSetupOptions, apiKey: string, apiUrl: strin
  */
 export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupResult> {
   const { out, err, ask } = opts;
+  const askKey = opts.askSecret ?? ask;
   out("\n  SystemDox MCP Server Setup\n");
 
   // 1. The key (the one this computer has, kept with Enter) and the API URL.
@@ -239,9 +276,13 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
     return { code: 1 };
   }
   let { apiKey, source: keySource } = chosen;
-  // A kept key goes where this shell already points: Enter never sends it elsewhere.
-  const urlDefault = (opts.env ?? process.env).SYSTEMDOX_API_URL?.trim() || API_URL_DEFAULT;
-  const apiUrl = (await ask(`  API URL [${urlDefault}]: `)).trim() || urlDefault;
+  // The API URL and the targets are asked once, on a computer with no key yet
+  // (or with --choose): a later run keeps what this computer already has.
+  const detected = findConfigTargets(opts.cwd).filter((t) => t.detected);
+  const configured = detected.filter((t) => entryOf(t.path) !== undefined);
+  const askAgain = !chosen.hadKey || !!opts.choose;
+  const urlDefault = (opts.env ?? process.env).SYSTEMDOX_API_URL?.trim() || (chosen.hadKey ? configuredUrl(configured) : undefined) || API_URL_DEFAULT;
+  const apiUrl = askAgain ? (await ask(`  API URL [${urlDefault}]: `)).trim() || urlDefault : urlDefault;
 
   // Fail closed on a non-https API URL: the key is sent as a bearer token, so an
   // http:// URL would leak it in cleartext. Reject before writing/validating.
@@ -262,8 +303,9 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
       return { code: 1 };
     }
     // A kept key that no longer works (revoked or expired): one new key, once.
+    if (apiUrl !== API_URL_DEFAULT) out(`  Checked at ${apiUrl}. If that address is out of date, stop here and run setup with --choose.`);
     const replacement = (
-      await ask(`  The key you kept (${lastFour(apiKey)}) did not work: it may be revoked or expired, or SystemDox could not be reached. Paste a new key, or press Enter to stop: `)
+      await askKey(`  The key you kept (${lastFour(apiKey)}) did not work: it may be revoked or expired, or SystemDox could not be reached. Paste a new key (it is not shown), or press Enter to stop: `)
     ).trim();
     if (!replacement || !(await validate(replacement, apiUrl))) {
       err("\n  Error: Invalid API key or cannot reach the SystemDox API.\n  Check your key and try again.\n");
@@ -280,20 +322,25 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
   }
 
   // 3. Which configs.
-  const detected = findConfigTargets(opts.cwd).filter((t) => t.detected);
-  out("  Available targets:");
-  detected.forEach((t, i) => out(`    ${i + 1}. ${t.name} (${t.path})`));
-  const choice = (await ask(`\n  Which target? [1-${detected.length}, or 'all']: `)).trim();
   let selected: McpConfigTarget[];
-  if (choice.toLowerCase() === "all") {
-    selected = detected;
+  if (!askAgain && configured.length) {
+    // An entry that names another API URL is left as it is: a project's file is the project's.
+    selected = configured.filter((t) => (entryUrl(t) ?? API_URL_DEFAULT) === apiUrl);
+    out("  To change the API URL or the AI tools, run setup with --choose.");
   } else {
-    const idx = parseInt(choice, 10) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= detected.length) {
-      err("\n  Invalid selection.\n");
-      return { code: 1 };
+    out("  Available targets:");
+    detected.forEach((t, i) => out(`    ${i + 1}. ${t.name} (${t.path})`));
+    const choice = (await ask(`\n  Which target? [1-${detected.length}, or 'all']: `)).trim();
+    if (choice.toLowerCase() === "all") {
+      selected = detected;
+    } else {
+      const idx = parseInt(choice, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= detected.length) {
+        err("\n  Invalid selection.\n");
+        return { code: 1 };
+      }
+      selected = [detected[idx]];
     }
-    selected = [detected[idx]];
   }
 
   // 4. The key, once: credentials.json. Then the server entries, without it.

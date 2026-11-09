@@ -32,6 +32,8 @@ export default defineConfig({
     // Entry point so the https-pinning unit tests can drive requireHttpsApiUrl
     // and loadConfig without booting the server.
     "src/lib/config.ts",
+    // Entry point so its unit test can drive the hidden prompt with its own streams.
+    "src/lib/hidden-prompt.ts",
     // Entry point so the EMF tool-call telemetry unit tests can drive the
     // envelope builder and body parser without a Lambda invocation.
     "src/lib/metrics.ts",

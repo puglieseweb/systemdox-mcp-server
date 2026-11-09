@@ -223,19 +223,19 @@ How the team memory works, for a member and for a team lead, is in the guide
 One command sets up your computer, and the same command updates it:
 
 ```bash
-npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]
+npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite] [--choose]
 ```
 
-- **The key must be able to sync.** Create it in the console under Settings ›
-  API keys with **Developer** or **Architect** access on **All spaces**, with
-  **Allow changes** ticked. A key made with the defaults is a **Reader** key:
-  it reads the team setup, but SystemDox refuses its pushes (`SYD-A001`), so it
-  cannot sync a team memory.
+- **The key must be able to sync.** In the console, Settings › API keys, press
+  **Key for Claude Code team setup**. A key made with the form's defaults is a
+  **Reader** key: it reads the team setup, but SystemDox refuses its pushes
+  (`SYD-A001`), so it cannot sync a team memory.
 - **The key is kept.** On a computer that already has a key (in
   `SYSTEMDOX_API_KEY`, or stored by an earlier `setup`), `setup` shows it by its
   last four characters, as the console lists keys: press Enter to keep it, or
-  paste a new key to replace it. A kept key that SystemDox refuses (revoked or
-  expired) is replaced once, at the same prompt.
+  paste a new key to replace it. A key is never shown as you paste it. A kept
+  key that SystemDox refuses (revoked or expired) is replaced once, at the same
+  prompt. The API URL and the AI tools are asked once; `--choose` asks again.
 - **The workspace's first team memory needs a name.** With no team memory yet,
   `setup` asks for one at a terminal (Enter skips it), or take it from
   `--project <name>`. Later computers find the only team memory by themselves,
@@ -272,7 +272,9 @@ npx -y @systemdox/mcp-server setup [--project <name>] [--dir <checkout>] [--impo
 - Two steps are left for you, because Claude Code registers a marketplace only
   once a session has started: open Claude Code once in any folder and close
   it, then run `claude plugin install <workspace>-setup@systemdox-<workspace>`
-  in your own terminal and accept the command it shows. `setup` never adds the
+  in your own terminal and accept the command it shows. When the plugin is
+  already installed and a newer version exists, `setup` prints
+  `claude plugin update <workspace>-setup@systemdox-<workspace>` instead. `setup` never adds the
   marketplace through `claude` and never enables the plugin for you.
 - `--yes` answers for you only without a terminal, and only for what you have
   accepted before; anything new or changed is listed and stops the run.

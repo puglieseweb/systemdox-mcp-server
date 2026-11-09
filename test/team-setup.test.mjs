@@ -13,13 +13,16 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { crc32, deflateRawSync } from "node:zlib";
 import { SystemDoxApiClient, SystemDoxApiError } from "../dist/lib/api-client.js";
-import { hookLines, runSyncMemory, syncMemory } from "../dist/sync-memory.js";
+import { hookLines, parseSyncMemoryArgs, runSyncMemory, syncMemory } from "../dist/sync-memory.js";
 import { claudeMemoryFolder, memoryImports, parseSetupArgs, runTeamSetup, runTeamSetupCommand, setJsonMember, withImportBlock } from "../dist/setup-team.js";
 import { setupMcpServer } from "../dist/setup-mcp.js";
 import { findPersonValues, findSecrets, normalise, rewriteHomePaths } from "../dist/lib/person-values.js";
+import { askHidden } from "../dist/lib/hidden-prompt.js";
+import { around } from "../dist/lib/memory-sync.js";
 import {
   apiKeyFor,
   credentialsPath,
@@ -845,7 +848,7 @@ scenario("TSU-M-19", () =>
     assert.ok(t.asked[0].includes(PHONE), t.asked[0]);
     assert.match(t.asked[0], /is in 5 files/);
     assert.match(t.asked[0], /in a\.md:\n {2}Reseller: call 07700 900456 after five\./, "the first line it appears on");
-    assert.match(t.asked[0], /\[m\] a member's contact {2}\[p\] someone else {2}\[o\] ours, not a person {2}\[x\] leave these files out {2}\[s\] skip for now/);
+    assert.match(t.asked[0], /\[m\] a member's contact {2}\[p\] someone else, such as a client {2}\[o\] ours, not a person {2}\[x\] leave these files out {2}\[s\] skip for now/);
     assert.deepEqual(team.uploaded(), [], "skipped for now: nothing sent");
     assert.match(text, /\nSkipped:\n- a\.md: it holds a value nobody has answered for: run `npx -y @systemdox\/mcp-server sync-memory --project notes` in a terminal/);
   })
@@ -1692,15 +1695,15 @@ test("setup: when SystemDox does not name the key's workspace, the key is stored
     await writeCredentials("other", KEY_OTHER);
     const down = { getOwnTeamSetup: async () => { throw apiError(503, "SYD-X500"); } };
 
-    const bad = await mcpStep(down, home, { answers: [KEY_ACME, "", "Not a workspace!"] });
+    const bad = await mcpStep(down, home, { answers: [KEY_ACME, "Not a workspace!"] });
     assert.equal(bad.code, 1, bad.text);
     assert.match(bad.text, /Nothing was changed/);
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { other: { apiKey: KEY_OTHER } });
     assert.ok(!existsSync(join(home, "checkout", ".mcp.json")));
 
-    const typed = await mcpStep(down, home, { answers: [KEY_ACME, "", "acme", "1"] });
+    const typed = await mcpStep(down, home, { answers: [KEY_ACME, "acme", "1"] });
     assert.equal(typed.code, 0, typed.text);
-    assert.match(typed.asked[2], /workspace/);
+    assert.match(typed.asked[1], /workspace/);
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { other: { apiKey: KEY_OTHER }, acme: { apiKey: KEY_ACME } });
     // Two workspaces' keys: the entry names which one this server uses.
     assert.deepEqual(JSON.parse(await readFile(join(home, "checkout", ".mcp.json"), "utf8")).mcpServers.systemdox, {
@@ -1709,9 +1712,9 @@ test("setup: when SystemDox does not name the key's workspace, the key is stored
       env: { SYSTEMDOX_WORKSPACE: "acme" },
     });
 
-    const fromEnv = await mcpStep(down, home, { answers: [KEY_ACME, "", "1"], env: { SYSTEMDOX_WORKSPACE: "acme" } });
+    const fromEnv = await mcpStep(down, home, { answers: [KEY_ACME], env: { SYSTEMDOX_WORKSPACE: "acme" } });
     assert.equal(fromEnv.code, 0, fromEnv.text);
-    assert.equal(fromEnv.asked.length, 3, "not asked for the workspace");
+    assert.equal(fromEnv.asked.length, 1, "not asked for the workspace, the API URL or the tools");
   })
 );
 
@@ -2287,7 +2290,7 @@ function planEndsWith(text, line) {
 const NAME_QUESTION = /^acme has no team memory yet\. Name one for this checkout \(lower case letters, digits and -\), or press Enter for none: $/;
 const NO_MEMORY_LINE = "No team memory: run setup again with --project <name> to start one.";
 const KEY_LINE = (project) =>
-  `The key cannot sync the team memory ${project}: create a key in Settings › API keys with Developer or Architect access on All spaces, with Allow changes ticked, then run setup again.`;
+  `The key cannot sync the team memory ${project}: create one with Key for Claude Code team setup at https://acme.build.systemdox.com/settings/api-keys?for=team-setup, then run setup again and paste it.`;
 
 scenario("TSU-M-47", () =>
   withHome((home) =>
@@ -2322,7 +2325,7 @@ scenario("TSU-M-48", () =>
       assert.deepEqual(probes, ["puglieseweb-ltd"], "SystemDox was asked whether the key may push");
       assert.doesNotMatch(text, /^- the team memory |^- autoMemoryDirectory|imported into/m, "the team memory is left out");
       planEndsWith(text, KEY_LINE("puglieseweb-ltd"));
-      assert.match(text, /Developer or Architect access on All spaces, with Allow changes ticked/);
+      assert.match(text, /Key for Claude Code team setup at https:\/\/acme\.build\.systemdox\.com\/settings\/api-keys\?for=team-setup/);
       assert.equal(asked.length, 1, "one yes");
       assert.equal(await readFile(join(home, ".claude", "systemdox", "acme", "CLAUDE.md"), "utf8"), INSTRUCTIONS_V1, "the instructions are set up");
       assert.ok(JSON.parse(await readFile(join(home, ".claude", "settings.json"), "utf8")).extraKnownMarketplaces["systemdox-acme"], "and the plugin's marketplace");
@@ -2411,7 +2414,7 @@ test("setup's key check: a space the key cannot read leaves the memory out; any 
 // ── setup keeps the key this computer already has ─────────────────────────
 
 /** setup's first step with a validator that accepts `good` keys only. */
-async function keyStep(home, answers, { good = [KEY_ACME], env = {} } = {}) {
+async function keyStep(home, answers, { good = [KEY_ACME], env = {}, choose = false } = {}) {
   const lines = [];
   const t = terminal(...answers);
   const result = await setupMcpServer({
@@ -2420,6 +2423,7 @@ async function keyStep(home, answers, { good = [KEY_ACME], env = {} } = {}) {
     ask: t.ask,
     cwd: join(home, "checkout"),
     env,
+    choose,
     validateKey: async (key) => good.includes(key),
     client: () => ({ getOwnTeamSetup: async () => ({ workspace: "acme" }) }),
   });
@@ -2430,11 +2434,11 @@ test("setup again: Enter keeps the stored key, so no new key is needed, and the 
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("acme", KEY_ACME);
-    const r = await keyStep(home, ["", "", "all"]);
+    const r = await keyStep(home, ["", "", "all"], { choose: true });
     assert.equal(r.code, 0, r.text);
     assert.equal(r.apiKey, KEY_ACME);
     assert.equal(r.keySource, "credentials");
-    assert.equal(r.asked[0], `  Press Enter to keep the key stored for acme (…${KEY_ACME.slice(-4)}), or paste a new key: `);
+    assert.equal(r.asked[0], `  Press Enter to keep the key stored for acme (…${KEY_ACME.slice(-4)}), or paste a new key (it is not shown): `);
     assert.ok(!r.text.includes(KEY_ACME) && !r.asked.join("").includes(KEY_ACME), "only the last four characters are shown");
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
   })
@@ -2444,7 +2448,7 @@ test("setup again: a pasted key replaces the stored one", () =>
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("acme", KEY_OTHER);
-    const r = await keyStep(home, [KEY_ACME, "", "all"]);
+    const r = await keyStep(home, [KEY_ACME, "", "all"], { choose: true });
     assert.equal(r.code, 0, r.text);
     assert.equal(r.keySource, "prompt");
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
@@ -2455,14 +2459,14 @@ test("setup again: a kept key that is refused asks for one new key, once", () =>
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("acme", KEY_OTHER); // revoked or expired
-    const r = await keyStep(home, ["", "", KEY_ACME, "all"]);
+    const r = await keyStep(home, ["", "", KEY_ACME, "all"], { choose: true });
     assert.equal(r.code, 0, r.text);
-    assert.equal(r.asked[2], "  The key you kept (…0002) did not work: it may be revoked or expired, or SystemDox could not be reached. Paste a new key, or press Enter to stop: ");
+    assert.equal(r.asked[2], "  The key you kept (…0002) did not work: it may be revoked or expired, or SystemDox could not be reached. Paste a new key (it is not shown), or press Enter to stop: ");
     assert.equal(r.apiKey, KEY_ACME);
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
 
     await writeCredentials("acme", KEY_OTHER);
-    const refused = await keyStep(home, ["", "", "also-" + "refused"]);
+    const refused = await keyStep(home, ["", "", "also-" + "refused"], { choose: true });
     assert.equal(refused.code, 1, "a second refusal stops, changing nothing");
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_OTHER } });
   })
@@ -2472,22 +2476,22 @@ test("setup again: SYSTEMDOX_API_KEY is offered before credentials.json, and sev
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("acme", KEY_OTHER);
-    const fromEnv = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_API_KEY: KEY_ACME } });
+    const fromEnv = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_API_KEY: KEY_ACME }, choose: true });
     assert.equal(fromEnv.code, 0, fromEnv.text);
     assert.equal(fromEnv.keySource, "environment");
     assert.equal(fromEnv.apiKey, KEY_ACME, "the environment comes first");
-    assert.match(fromEnv.asked[0], /^  Press Enter to keep the key in SYSTEMDOX_API_KEY \(…0001\), or paste a new key: $/);
+    assert.match(fromEnv.asked[0], /^  Press Enter to keep the key in SYSTEMDOX_API_KEY \(…0001\), or paste a new key \(it is not shown\): $/);
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_OTHER } }, "a key the workspace already has stored is not overwritten");
 
     await writeCredentials("acme", KEY_ACME);
     await writeCredentials("globex", KEY_OTHER);
-    const several = await keyStep(home, ["acme", "", "all"]);
+    const several = await keyStep(home, ["acme", "", "all"], { choose: true });
     assert.equal(several.code, 0, several.text);
-    assert.equal(several.asked[0], "  Keys are stored for acme, globex. Type the workspace whose key to keep, or paste a new key: ");
+    assert.equal(several.asked[0], "  Keys are stored for acme, globex. Type the workspace whose key to keep, or paste a new key (it is not shown): ");
     assert.equal(several.apiKey, KEY_ACME);
     assert.equal(several.keySource, "credentials");
 
-    const named = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_WORKSPACE: "acme" } });
+    const named = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_WORKSPACE: "acme" }, choose: true });
     assert.equal(named.code, 0, named.text);
     assert.equal(named.apiKey, KEY_ACME, "SYSTEMDOX_WORKSPACE chooses among several");
     assert.match(named.asked[0], /key stored for acme/);
@@ -2498,7 +2502,7 @@ test("setup again: a key kept from the file is never written back, under any nam
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("old-name", KEY_ACME); // the API now names the workspace acme
-    const r = await keyStep(home, ["", "", "all"]);
+    const r = await keyStep(home, ["", "", "all"], { choose: true });
     assert.equal(r.code, 0, r.text);
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { "old-name": { apiKey: KEY_ACME } });
   })
@@ -2507,10 +2511,10 @@ test("setup again: a key kept from the file is never written back, under any nam
 test("setup again: a new key pasted while SYSTEMDOX_API_KEY is set says the variable is read first", () =>
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
-    const r = await keyStep(home, [KEY_ACME, "", "all"], { env: { SYSTEMDOX_API_KEY: KEY_OTHER } });
+    const r = await keyStep(home, [KEY_ACME, "", "all"], { env: { SYSTEMDOX_API_KEY: KEY_OTHER }, choose: true });
     assert.equal(r.code, 0, r.text);
     assert.match(r.text, /SYSTEMDOX_API_KEY is set in this shell and is read before the stored key: unset it, or the new key is not used\./);
-    const kept = await keyStep(home, ["", "", "all"], { good: [KEY_OTHER], env: { SYSTEMDOX_API_KEY: KEY_OTHER } });
+    const kept = await keyStep(home, ["", "", "all"], { good: [KEY_OTHER], env: { SYSTEMDOX_API_KEY: KEY_OTHER }, choose: true });
     assert.doesNotMatch(kept.text, /read before the stored key/, "nothing to say when the variable's key is the one kept");
   })
 );
@@ -2519,7 +2523,7 @@ test("setup again: Enter at the API URL keeps where this shell points, so a kept
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("acme", KEY_ACME);
-    const r = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_API_URL: "https://preprod.example.com/systemdox" } });
+    const r = await keyStep(home, ["", "", "all"], { env: { SYSTEMDOX_API_URL: "https://preprod.example.com/systemdox" }, choose: true });
     assert.equal(r.code, 0, r.text);
     assert.equal(r.apiUrl, "https://preprod.example.com/systemdox");
     assert.equal(r.asked[1], "  API URL [https://preprod.example.com/systemdox]: ");
@@ -2592,9 +2596,9 @@ test("setup's key check: a revoked stored key is not called valid, and one new k
   withHome(async (home) => {
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("acme", KEY_OTHER);
-    const r = await realCheck(home, ["", "", KEY_ACME, "all"], [KEY_ACME]);
+    const r = await realCheck(home, ["", KEY_ACME, "all"], [KEY_ACME]);
     assert.equal(r.code, 0, r.text);
-    assert.match(r.asked[2], /did not work/, "the revoked key is caught here");
+    assert.match(r.asked[1], /did not work/, "the revoked key is caught here");
     assert.equal(r.apiKey, KEY_ACME);
     assert.deepEqual(JSON.parse(await readFile(credentialsPath(), "utf8")), { acme: { apiKey: KEY_ACME } });
     assert.ok(r.urls.every((u) => u.endsWith("/v1/team-setup")), `only a route that needs a key: ${r.urls}`);
@@ -2616,7 +2620,7 @@ test("setup: a key pasted at the API URL question is never repeated, and the err
     await mkdir(join(home, "checkout"), { recursive: true });
     await writeCredentials("acme", KEY_ACME);
     const pasted = "pweb_prod" + "_key_" + "01ABCDEF_notreal";
-    const r = await keyStep(home, ["", pasted]);
+    const r = await keyStep(home, ["", pasted], { choose: true });
     assert.equal(r.code, 1, r.text);
     assert.ok(!r.text.includes(pasted) && !r.text.includes("notreal"), r.text);
     assert.match(r.text, /A new key goes at the first question/);
@@ -2629,12 +2633,234 @@ test("setup: the workspace question takes the whole address as well as the name"
     await mkdir(join(home, "checkout"), { recursive: true });
     const down = { getOwnTeamSetup: async () => { throw apiError(503, "SYD-X500"); } };
     for (const typed of ["acme.systemdox.com", "https://acme.build.systemdox.com/settings", "ACME"]) {
+      await rm(credentialsPath(), { force: true });
+      await rm(join(home, ".claude.json"), { force: true });
+      await rm(join(home, "checkout", ".mcp.json"), { force: true });
       const r = await mcpStep(down, home, { answers: [KEY_ACME, "", typed, "1"] });
       assert.equal(r.code, 0, `${typed}: ${r.text}`);
       assert.equal(r.workspace, "acme", typed);
     }
   })
 );
+
+// ── The first setup of a real computer (proposal item 32) ─────────────────
+
+scenario("TSU-M-49", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    const first = await keyStep(home, [KEY_ACME, "", "1"]);
+    assert.equal(first.code, 0, first.text);
+    const again = await keyStep(home, [""]);
+    assert.equal(again.code, 0, again.text);
+    assert.equal(again.apiKey, KEY_ACME);
+    assert.equal(again.keySource, "credentials");
+    assert.equal(again.asked.length, 1, `only the key: ${again.asked.join(" | ")}`);
+    assert.match(again.asked[0], new RegExp(`stored for acme \\(…${KEY_ACME.slice(-4)}\\)`));
+    assert.ok(!again.text.includes(KEY_ACME) && !again.asked.join("").includes(KEY_ACME));
+    const choose = await keyStep(home, ["", "", "1"], { choose: true });
+    assert.equal(choose.asked.length, 3, "--choose asks the API URL and the tools again");
+  })
+);
+
+scenario("TSU-M-50", async () => {
+  const input = new PassThrough();
+  input.isTTY = true; // a terminal: readline echoes what is typed unless it is muted
+  const output = new PassThrough();
+  let printed = "";
+  output.on("data", (b) => (printed += b.toString()));
+  const answer = askHidden("  Paste your key: ", input, output);
+  const pasted = "pweb_prod" + "_key_" + "01ABCDEF_notreal";
+  input.write(`${pasted}\n`);
+  assert.equal(await answer, pasted);
+  assert.ok(printed.includes("Paste your key"), "the question is shown");
+  assert.ok(!printed.includes("notreal"), `the key is not: ${printed}`);
+
+  await withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    const lines = [];
+    const secret = [];
+    const r = await setupMcpServer({
+      out: (l) => lines.push(l),
+      err: (l) => lines.push(l),
+      ask: async (q) => pasted, // what was typed at the API URL question
+      askSecret: async (q) => (secret.push(q), KEY_ACME),
+      cwd: join(home, "checkout"),
+      env: {},
+      validateKey: async () => true,
+    }).catch((e) => e);
+    assert.ok(!lines.join("\n").includes("notreal"), lines.join("\n"));
+    assert.equal(secret.length, 1, "the key question uses the hidden prompt");
+    assert.equal(r.code, 1);
+  });
+});
+
+scenario("TSU-M-51", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_OTHER);
+    const r = await realCheck(home, ["", ""], [KEY_ACME]);
+    assert.equal(r.code, 1, r.text);
+    assert.match(r.asked[1], /did not work/);
+    assert.ok(!r.text.includes("validated successfully"), r.text);
+    assert.ok(r.urls.every((u) => u.endsWith("/v1/team-setup")), `only a route that needs a key: ${r.urls}`);
+  })
+);
+
+scenario("TSU-M-52", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      await write(home, ".claude/plugins/installed_plugins.json", JSON.stringify({ version: 2, plugins: { "acme-setup@systemdox-acme": [{ version: "1.0.0-abc" }] } }));
+      await write(keptFolder(home), "a.md", mem("project", "A"));
+      const s = setupRecording({ memory: null });
+      const realPush = s.client.pushMemoryVersion;
+      s.client.pushMemoryVersion = async (...args) => {
+        const done = await realPush(...args);
+        s.publishHooks(["npx -y @systemdox/mcp-server sync-memory --hook acme"]);
+        return done;
+      };
+      const r = await setupRun(s.client, home, { project: "acme-platform" });
+      assert.equal(r.code, 0, r.text);
+      assert.match(r.text, /^- the memory sync this first sync adds to acme-setup, at the start and the end of every session:$/m);
+      assert.ok(r.text.includes("    npx -y @systemdox/mcp-server sync-memory --hook acme"), r.text);
+      assert.ok(r.text.includes("Run `claude plugin update acme-setup@systemdox-acme` in your own terminal, accept the command it shows, then restart Claude Code."), r.text);
+      assert.ok(!r.text.includes("claude plugin install"), r.text);
+    })
+  )
+);
+
+scenario("TSU-M-53", () =>
+  withHome(async (home) => {
+    const team = fakeTeam();
+    const dir = memoryDir(home);
+    const long = `${"Earlier notes that say nothing about it. ".repeat(14)}Never ring ${PHONE} (a real client). ${"Later notes about something else. ".repeat(14)}`;
+    await write(dir, "a.md", mem("project", long));
+    const t = terminal("s");
+    const { code, text } = await sync(team, { ask: t.ask });
+    assert.equal(code, 0, text);
+    assert.match(t.asked[0], /Where it first appears, in a\.md:/);
+    assert.ok(t.asked[0].includes("(a real client)"), t.asked[0]);
+    assert.ok(!t.asked[0].includes(long.trim()), "not the whole line");
+    assert.ok(t.asked[0].length < 500, `${t.asked[0].length} characters`);
+  })
+);
+
+scenario("TSU-M-54", () =>
+  withHome(async (home) => {
+    const key = valueKey("phone", PHONE);
+    const team = fakeTeam({ answered: { [key]: { answer: "ours" } } });
+    const dir = memoryDir(home);
+    await write(dir, "a.md", mem("project", `Call ${PHONE} after five.`));
+    const untouched = await sync(team, { ask: terminal().ask });
+    assert.equal(untouched.code, 0, untouched.text);
+    const t = terminal("p", "reseller, sales", "y");
+    const { code, text } = await sync(team, { ask: t.ask, reanswer: PHONE });
+    assert.equal(code, 0, text);
+    assert.match(t.asked[0], /Where it first appears/, "asked again");
+    const held = await readFile(join(dir, "a.md"), "utf8");
+    assert.ok(!held.includes(PHONE), held);
+    assert.match(held, /`con_[^`]+` \(reseller, sales\)/);
+    const missing = await sync(team, { ask: terminal().ask, reanswer: "07700 900999" });
+    assert.match(missing.text, /is in no file this sync reads/);
+  })
+);
+
+scenario("TSU-M-55", () => {
+  const home = "/ho" + "me/jbloggs";
+  const text = `pip install "${home}/git/pkg[extra]"\ncd ${home}/git\nimport x from '${home}/git/y';\n`;
+  const out = rewriteHomePaths(text);
+  assert.equal(out, `pip install "$HOME/git/pkg[extra]"\ncd ~/git\nimport x from '~/git/y';\n`);
+});
+
+test("the rewrite marks a home folder inside single quotes for the member to check", () =>
+  withHome(async (home) => {
+    const team = fakeTeam();
+    const dir = memoryDir(home);
+    await write(dir, "a.md", mem("project", `import x from '${"/ho" + "me/jbloggs"}/git/y';`));
+    const t = terminal("y");
+    const { code, text } = await sync(team, { ask: t.ask });
+    assert.equal(code, 0, text);
+    assert.match(text, /~ does not expand inside single quotes: check this line/);
+  })
+);
+
+test("setup: a plugin already at the latest version needs no further step", () =>
+  withHome((home) =>
+    withClaude("2.1.316", async () => {
+      await ownFiles(home);
+      await write(home, ".claude/plugins/installed_plugins.json", JSON.stringify({ version: 2, plugins: { "acme-setup@systemdox-acme": [{ version: "1.0.0-abc" }] } }));
+      const s = setupRecording();
+      const r = await setupRun(s.client, home);
+      assert.equal(r.code, 0, r.text);
+      assert.ok(!r.text.includes("claude plugin"), r.text);
+    })
+  )
+);
+
+test("setup again: a project's own file never supplies the API URL, and an entry naming another URL is left alone", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_ACME);
+    const elsewhere = "https://elsewhere.example.com/systemdox";
+    const project = { mcpServers: { systemdox: { command: "npx", args: ["@systemdox/mcp-server"], env: { SYSTEMDOX_API_URL: elsewhere } } } };
+    await write(home, "checkout/.mcp.json", JSON.stringify(project));
+    await write(home, ".claude.json", JSON.stringify({ mcpServers: { systemdox: { command: "npx", args: ["@systemdox/mcp-server"] } } }));
+    const before = await readFile(join(home, "checkout", ".mcp.json"), "utf8");
+    const r = await keyStep(home, [""]);
+    assert.equal(r.code, 0, r.text);
+    assert.equal(r.apiUrl, "https://api.puglieseweb.com/systemdox", "not the project's address");
+    assert.equal(await readFile(join(home, "checkout", ".mcp.json"), "utf8"), before, "the project's file is the project's");
+  })
+);
+
+test("setup again: the member's own API URL is kept, and is the default that --choose offers", () =>
+  withHome(async (home) => {
+    await mkdir(join(home, "checkout"), { recursive: true });
+    await writeCredentials("acme", KEY_ACME);
+    const mine = "https://preprod.example.com/systemdox";
+    await write(home, ".claude.json", JSON.stringify({ mcpServers: { systemdox: { command: "npx", args: ["@systemdox/mcp-server"], env: { SYSTEMDOX_API_URL: mine } } } }));
+    const kept = await keyStep(home, [""]);
+    assert.equal(kept.apiUrl, mine);
+    const choose = await keyStep(home, ["", "", "1"], { choose: true });
+    assert.equal(choose.asked[1], `  API URL [${mine}]: `);
+    assert.equal(choose.apiUrl, mine);
+    const stale = await keyStep(home, ["", ""], { good: [] });
+    assert.equal(stale.code, 1);
+    assert.match(stale.text, /Checked at https:\/\/preprod\.example\.com\/systemdox\. If that address is out of date, stop here and run setup with --choose\./);
+  })
+);
+
+test("--reanswer: parsed, refused with --hook, and says so when it cannot ask", () =>
+  withHome(async (home) => {
+    assert.equal(parseSyncMemoryArgs(["--reanswer", "07700 900456"]).reanswer, "07700 900456");
+    assert.throws(() => parseSyncMemoryArgs(["--hook", "acme", "--reanswer", "x"]), /--hook takes no other option/);
+    const key = valueKey("phone", PHONE);
+    const team = fakeTeam({ answered: { [key]: { answer: "ours" } } });
+    await write(memoryDir(home), "a.md", mem("project", `Call ${PHONE}.`));
+    const { text } = await sync(team, { reanswer: PHONE });
+    assert.match(text, /--reanswer asks a question, so it needs a terminal/);
+  })
+);
+
+test("the rewrite marks a path in the middle of single quotes, and not an apostrophe in a sentence", () =>
+  withHome(async (home) => {
+    const team = fakeTeam();
+    const dir = memoryDir(home);
+    const h = "/ho" + "me/jbloggs";
+    await write(dir, "a.md", mem("project", `sh -c 'cd ${h}/git && ls'`));
+    await write(dir, "b.md", mem("project", `The owner's copy is in ${h}/git, and it's fine.`));
+    const { text } = await sync(team, { ask: terminal("y").ask });
+    assert.equal(text.split("~ does not expand").length - 1, 1, text);
+    assert.ok(text.indexOf("~ does not expand") < text.indexOf("b.md"), text);
+  })
+);
+
+test("around: a short line is whole, a long one is cut on both sides, and an absent value still ends", () => {
+  assert.equal(around("Call 123 now", "123"), "Call 123 now");
+  const cut = around(`${"a".repeat(200)}VALUE${"b".repeat(200)}`, "VALUE", 10);
+  assert.equal(cut, `…${"a".repeat(10)}VALUE${"b".repeat(10)}…`);
+  assert.equal(around("x".repeat(300), "VALUE", 10).length, 21);
+});
 
 test("team-setup.feature: a @proposed scenario has no test yet, and a @built one has one", () => {
   for (const s of SCENARIOS) {

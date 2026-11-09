@@ -29,10 +29,13 @@ if (command === "setup") {
         console.error(`\n  Error: ${(err as Error).message}\n`);
         process.exit(1);
       }
+      const { askHidden } = await import("./lib/hidden-prompt.js");
       const step = await setupMcpServer({
         out: console.log,
         err: console.error,
         ask: (question: string) => prompt(question),
+        askSecret: (question: string) => askHidden(question),
+        choose: teamArgs.choose,
       });
       if (step.code !== 0) return step.code;
       return runTeamSetupCommand(teamArgs, step, {
@@ -91,7 +94,7 @@ if (command === "setup") {
 
   Usage:
     systemdox-mcp-server          Start the MCP server (stdio transport)
-    systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]
+    systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite] [--choose]
                                   Configure the MCP server in your AI coding tool,
                                   then your team's setup: the team instructions,
                                   the plugin's marketplace and the project's team
@@ -112,6 +115,9 @@ if (command === "setup") {
                                   Sync a project's team memory with SystemDox
                                   (default folder:
                                   ~/.claude/systemdox/<workspace>/memory/<project>)
+    systemdox-mcp-server sync-memory --project <name> --reanswer <value>
+                                  Give a different answer about a phone number or
+                                  email address (in a terminal)
     systemdox-mcp-server sync-memory --hook <workspace>
                                   The run the team plugin makes at the start and
                                   the end of a session: the memories this computer

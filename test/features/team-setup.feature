@@ -348,3 +348,49 @@ Feature: Setting up a computer, and syncing its memory, from a terminal and over
     When the member runs setup for the project "puglieseweb-ltd"
     Then what setup shows leaves the team memory out and says to make a key with Developer or Architect access on All spaces, with Allow changes ticked
     And after the member answers yes, the plugin and the instructions are set up and no memory folder is set
+
+  # Running setup again, and the words it uses (proposal item 32)
+
+  @built
+  Scenario: TSU-M-49 Running setup again keeps the key this computer has
+    Given this computer has a key stored for "acme"
+    When the member runs setup and presses Enter at the first question
+    Then the key is kept, shown only by its last four characters
+    And they are not asked for the API URL or the AI tools again
+
+  @built
+  Scenario: TSU-M-50 A key is not shown as it is pasted, and an error never repeats one
+    Given the member pastes a key at setup's first question
+    Then the key does not appear on the screen
+    And a key given by mistake at the API URL question is not repeated in the error
+
+  @built
+  Scenario: TSU-M-51 A key SystemDox refuses is never called valid
+    Given the key stored on this computer has been revoked
+    When the member keeps it at setup's first question
+    Then setup says it did not work and asks for a new one
+
+  @built
+  Scenario: TSU-M-52 The first sync says what it adds to the plugin, and ends with the right step
+    Given the team plugin of "acme" is installed and does not sync the memory
+    When the member runs setup for a first team memory and answers yes
+    Then what setup shows includes the memory sync command the plugin will gain
+    And setup ends by telling the member to update the plugin, not to install it
+
+  @built
+  Scenario: TSU-M-53 The question about a value shows the words around it, however long the line is
+    Given a phone number sits in a line of a thousand characters, next to the words "a real client"
+    When the member syncs in a terminal
+    Then the question shows the words around the number, with "a real client" among them, and not the whole line
+
+  @built
+  Scenario: TSU-M-54 A wrong answer about a value can be given again
+    Given the member answered that "07700 900456" is ours
+    When the member syncs asking to answer that value again and says it is someone else, a reseller
+    Then the files hold the reseller's identifier in place of the number
+
+  @built
+  Scenario: TSU-M-55 A home folder inside double quotes still works once it is rewritten
+    Given a note holds a home folder inside double quotes and another outside any
+    When the member accepts the rewrite
+    Then the first reads "$HOME" and the second "~"

@@ -55,7 +55,7 @@ import type { PluginVersion, TeamSetup } from "./lib/team-setup-types.js";
 import { refusal, syncMemory, type SyncClient } from "./sync-memory.js";
 
 export const SETUP_USAGE =
-  "Usage: systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite]";
+  "Usage: systemdox-mcp-server setup [--project <name>] [--dir <checkout>] [--import <folder>]... [--yes] [--overwrite] [--choose]";
 export const HEADERS_HELPER = "npx -y @systemdox/mcp-server marketplace-auth";
 
 export interface TeamSetupArgs {
@@ -65,6 +65,8 @@ export interface TeamSetupArgs {
   importDirs?: string[];
   yes: boolean;
   overwrite: boolean;
+  /** Ask the API URL and the AI tools again, on a computer that already has a key. */
+  choose?: boolean;
 }
 
 export type TeamSetupClient = SyncClient & Pick<SystemDoxApiClient, "getPartVersion" | "getPlugin">;
@@ -97,6 +99,7 @@ export function parseSetupArgs(argv: string[]): TeamSetupArgs {
     const a = argv[i];
     if (a === "--yes") args.yes = true;
     else if (a === "--overwrite") args.overwrite = true;
+    else if (a === "--choose") args.choose = true;
     else if (a === "--project" || a === "--dir" || a === "--import") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new Error(`${a} needs a value\n${SETUP_USAGE}`);
@@ -433,9 +436,9 @@ const mcpLines = (p: PluginVersion) =>
 export const NO_TEAM_MEMORY_LINE = "No team memory: run setup again with --project <name> to start one.";
 
 /** The plan's last line when the key may not push the project (contract.md, item 31). */
-export const keyCannotSyncLine = (project: string) =>
-  `The key cannot sync the team memory ${project}: create a key in Settings › API keys with Developer or ` +
-  "Architect access on All spaces, with Allow changes ticked, then run setup again.";
+export const keyCannotSyncLine = (project: string, workspace: string) =>
+  `The key cannot sync the team memory ${project}: create one with Key for Claude Code team setup at ` +
+  `https://${workspace}.build.systemdox.com/settings/api-keys?for=team-setup, then run setup again and paste it.`;
 
 async function chooseProject(own: TeamSetup, opts: TeamSetupOptions, canAsk: boolean): Promise<string | undefined> {
   if (opts.project) return opts.project;
@@ -523,7 +526,7 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
     if (project && !(await keyMayPush(opts.client, ws, project))) {
       // A key that may not push (a Reader key, the console's default): the
       // memory is left out, and the plugin and the instructions go ahead.
-      memoryNote = keyCannotSyncLine(project);
+      memoryNote = keyCannotSyncLine(project, ws);
       project = undefined;
       memoryLeftOut = true;
     }
@@ -598,6 +601,15 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
         items.push({ ...item(`the team memory ${project}`, [memoryFolder]), lines: [`${project}: new, synced into ${memoryFolder}`] });
       }
       items.push(item(`autoMemoryDirectory in ${localSettings}`, [memoryFolder]));
+      // The first push publishes the plugin version that carries these hooks:
+      // shown now, before the yes, as every hook command is.
+      if (!plugin?.memoryHooks && !state.memory?.[project]) {
+        items.push(
+          item(`the memory sync this first sync adds to ${ws}-setup, at the start and the end of every session`, [
+            `npx -y @systemdox/mcp-server sync-memory --hook ${ws}`,
+          ])
+        );
+      }
     }
 
     // The project's first sync on this computer imports the memory Claude Code
@@ -705,13 +717,27 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
       if (code !== 0) return 1;
     }
 
-    // 4. Finish.
-    if (plugin) {
+    // 4. Finish. The first push may just have published a newer plugin version.
+    let latestPlugin = plugin;
+    if (project) {
+      try {
+        latestPlugin = (await client.getOwnTeamSetup()).plugin ?? plugin;
+      } catch {
+        // the version read before the sync still names a step
+      }
+    }
+    if (latestPlugin) {
       const pluginsDir = join(home, ".claude", "plugins");
       const id = `${ws}-setup@${marketplaceName}`;
       const installed = (await readJsonQuietly(join(pluginsDir, "installed_plugins.json"))) as
         | { plugins?: Record<string, unknown> }
         | undefined;
+      const have = installed?.plugins?.[id] ? installedPluginVersion(installed.plugins[id]) : undefined;
+      if (installed?.plugins?.[id] && have !== undefined && have < latestPlugin.version) {
+        out("");
+        out("One step is left:");
+        out(`1. Run \`claude plugin update ${id}\` in your own terminal, accept the command it shows, then restart Claude Code.`);
+      }
       if (!installed?.plugins?.[id]) {
         const known = (await readJsonQuietly(join(pluginsDir, "known_marketplaces.json"))) as Record<string, unknown> | undefined;
         const install = `Run \`claude plugin install ${id}\` in your own terminal and accept the command it shows.`;
@@ -728,6 +754,14 @@ export async function runTeamSetup(opts: TeamSetupOptions): Promise<number> {
     out((e as Error).message);
     return 1;
   }
+}
+
+/** The plugin version Claude Code has installed: the n of its `n.0.0-<hash>`. */
+function installedPluginVersion(entry: unknown): number | undefined {
+  const first = Array.isArray(entry) ? entry[0] : entry;
+  const version = (first as { version?: unknown } | undefined)?.version;
+  const n = typeof version === "string" ? parseInt(version, 10) : NaN;
+  return Number.isInteger(n) ? n : undefined;
 }
 
 /** Remove every unpacked plugin folder but the two newest, and their records. */

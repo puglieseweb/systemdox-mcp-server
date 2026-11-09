@@ -42,12 +42,13 @@ import {
   personToken,
   planMerge,
   rewriteValues,
+  around,
   conflictCopyName,
   type Manifest,
   type MergePlan,
   type ValueGroup,
 } from "./lib/memory-sync.js";
-import { findPersonValues, findSecrets, HOME_PATH, normalise } from "./lib/person-values.js";
+import { findPersonValues, findSecrets, HOME_PATH, homeStandIn, normalise } from "./lib/person-values.js";
 import {
   apiKeyFor,
   apiUrlFrom,
@@ -63,7 +64,7 @@ import {
 import type { FoundValue, ValueAnswer } from "./lib/team-setup-types.js";
 
 export const SYNC_MEMORY_USAGE =
-  "Usage: systemdox-mcp-server sync-memory [--project <name>] [--dir <folder>] [--import <folder>]... [--dry-run]\n" +
+  "Usage: systemdox-mcp-server sync-memory [--project <name>] [--dir <folder>] [--import <folder>]... [--dry-run] [--reanswer <value>]\n" +
   "       systemdox-mcp-server sync-memory --hook <workspace>";
 /** The hook run's budget, lock staleness and log size (contract.md "--hook"). */
 export const HOOK_BUDGET_MS = 20_000;
@@ -92,6 +93,8 @@ export interface SyncMemoryArgs {
   dryRun: boolean;
   /** `--hook <workspace>`: the run the team plugin makes. */
   hook?: string;
+  /** `--reanswer <value>`: ask about this value again; a new answer replaces the old one. */
+  reanswer?: string;
 }
 
 /** What a sync came to, for the hook run's one line (never a value). */
@@ -183,7 +186,7 @@ export function parseSyncMemoryArgs(argv: string[]): SyncMemoryArgs {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") args.dryRun = true;
-    else if (a === "--project" || a === "--dir" || a === "--import" || a === "--hook") {
+    else if (a === "--project" || a === "--dir" || a === "--import" || a === "--hook" || a === "--reanswer") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new SyncFailed(`${a} needs a value\n${SYNC_MEMORY_USAGE}`);
       if (a === "--project") {
@@ -192,11 +195,12 @@ export function parseSyncMemoryArgs(argv: string[]): SyncMemoryArgs {
       } else if (a === "--hook") {
         if (!isWorkspace(value)) throw new SyncFailed(`${value} is not a workspace name (lower case letters, digits and -)`);
         args.hook = value;
-      } else if (a === "--dir") args.dir = value;
+      } else if (a === "--reanswer") args.reanswer = value;
+      else if (a === "--dir") args.dir = value;
       else args.importDirs!.push(value);
     } else throw new SyncFailed(`Unexpected argument ${a}\n${SYNC_MEMORY_USAGE}`);
   }
-  if (args.hook && (args.project || args.dir || args.importDirs!.length || args.dryRun)) {
+  if (args.hook && (args.project || args.dir || args.importDirs!.length || args.dryRun || args.reanswer)) {
     throw new SyncFailed(`--hook takes no other option\n${SYNC_MEMORY_USAGE}`);
   }
   return args;
@@ -445,20 +449,28 @@ async function people(
     });
   }
 
+  const isReanswer = (g: ValueGroup) =>
+    opts.reanswer !== undefined && (g.value === opts.reanswer || g.normalised === normalise(g.kind, opts.reanswer));
+  if (opts.reanswer !== undefined && !terminal) {
+    out("--reanswer asks a question, so it needs a terminal and no --dry-run: nothing was answered again.");
+  } else if (opts.reanswer !== undefined && !groups.some(isReanswer)) {
+    out(`${opts.reanswer} is in no file this sync reads, so there is nothing to answer again.`);
+  }
+
   const vaultDown = new Set<string>();
   if (terminal) {
     const filed: { groups: ValueGroup[]; label: string }[] = [];
     for (const g of groups) {
       const key = groupKey(g.kind, g.normalised);
-      if (answers.has(key)) continue;
+      if (answers.has(key) && !isReanswer(g)) continue;
       let choices = ["m", "p", "o", "x", "s"];
       for (;;) {
         const question = [
-          `${g.value} (${g.kind}) is in ${g.files.length} file${g.files.length === 1 ? "" : "s"}. First line it appears on, in ${g.first.path}:`,
-          `  ${g.first.text}`,
+          `${g.value} (${g.kind}) is in ${g.files.length} file${g.files.length === 1 ? "" : "s"}. Where it first appears, in ${g.first.path}:`,
+          `  ${around(g.first.text, g.value)}`,
           [
             choices.includes("m") && "[m] a member's contact",
-            "[p] someone else",
+            "[p] someone else, such as a client",
             "[o] ours, not a person",
             "[x] leave these files out",
             "[s] skip for now",
@@ -572,7 +584,7 @@ async function people(
   for (const [path, text] of Object.entries(current)) {
     if (leftOut.has(path) || held.has(path)) continue;
     const next = rewriteValues(text, findings[path] ?? [], (f) => {
-      if (f.kind === HOME_PATH) return "~";
+      if (f.kind === HOME_PATH) return homeStandIn(text, f.start);
       const a = answers.get(groupKey(f.kind, f.normalised));
       return a && (a.answer === "member" || a.answer === "person") && a.personId ? personToken(a.personId, a.label) : undefined;
     });
@@ -581,7 +593,13 @@ async function people(
   const paths = Object.keys(rewritten).sort();
   if (paths.length && terminal) {
     out("", "The rewrite:");
-    for (const path of paths) out(path, ...lineDiff(current[path], rewritten[path]).map((l) => `  ${l}`));
+    for (const path of paths) {
+      out(path);
+      for (const l of lineDiff(current[path], rewritten[path])) {
+        out(`  ${l}`);
+        if (l.startsWith("+") && /(^|[\s=(:,+])'[^']*~[\\/][^']*'/.test(l)) out("    (~ does not expand inside single quotes: check this line)");
+      }
+    }
     const yes = /^y(es)?$/i.test((await ask!(`Rewrite ${paths.length} file${paths.length === 1 ? "" : "s"} as shown? [y/N] `)).trim());
     if (yes) {
       for (const path of paths) {
