@@ -82,7 +82,7 @@ const NOT_UNDERSTOOD = "That answer was not understood.";
 const CONSOLE_ERRORS = {
   gone: [404, "SYD-C001", "This request has expired. Start again from Claude."],
   otherWorkspace: [409, "SYD-C002", "You are signed in to another workspace."],
-  secondFactor: [403, "SYD-C003", "Confirm your second factor."],
+  secondFactor: [403, "SYD-C003", "Sign in again with your passkey."],
   notAnOwner: [403, "SYD-C004", "An owner or admin of this workspace has to connect."],
   notMinted: [502, "SYD-C005", "We could not finish that. Try again."],
   answered: [409, "SYD-C006", "This request was already answered."],

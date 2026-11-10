@@ -45,11 +45,11 @@ or run:
 claude mcp add --transport http systemdox https://<your-workspace>.mcp.systemdox.com/connect
 ```
 
-Your browser opens SystemDox. Sign in with your second factor and approve. It only
-reads unless you choose to allow writes. Claude holds a token for an hour, renewed
-for you, and the API key behind the connection stays with SystemDox. Only an owner
-or admin of the workspace can connect this way for now, and an account that signs
-in only with Google or Apple cannot.
+Your browser opens SystemDox. Sign in with your passkey and approve; if your
+account has no passkey yet, the page offers to add one. It only reads unless you
+choose to allow writes. Claude holds a token for an hour, renewed for you, and the
+API key behind the connection stays with SystemDox. Only an owner or admin of the
+workspace can connect this way for now.
 
 ## With an API key
 
