@@ -73,13 +73,13 @@
     "zod": "^3.25.67"
   },
   "devDependencies": {
-    "@aws-sdk/client-dynamodb": "3.1159.0",
-    "@aws-sdk/client-kms": "3.1159.0",
-    "@aws-sdk/client-secrets-manager": "3.1159.0",
-    "@aws-sdk/lib-dynamodb": "3.1159.0",
-    "@types/node": "^26.0.1",
-    "esbuild": "^0.25.0",
-    "tsup": "^8.5.1",
-    "typescript": "^6.0.2"
+    "@aws-sdk/client-dynamodb": "3.1168.0",
+    "@aws-sdk/client-kms": "3.1168.0",
+    "@aws-sdk/client-secrets-manager": "3.1168.0",
+    "@aws-sdk/lib-dynamodb": "3.1168.0",
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2"
   }
 }
