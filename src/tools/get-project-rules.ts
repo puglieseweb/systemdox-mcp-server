@@ -74,7 +74,7 @@ export function registerGetProjectRules(
         const label = CATEGORY_LABELS[cat] ?? cat;
         text += `## ${label}\n\n`;
         for (const rule of catRules) {
-          text += `- ${rule.text}\n`;
+          text += `- ${rule.text} (id: ${rule.id})\n`;
         }
         text += "\n";
       }

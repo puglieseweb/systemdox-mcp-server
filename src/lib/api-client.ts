@@ -116,10 +116,14 @@ export class SystemDoxApiClient {
     return this.mutate<T>("PUT", path, body);
   }
 
+  async delete<T>(path: string): Promise<T> {
+    return this.mutate<T>("DELETE", path);
+  }
+
   private async mutate<T>(
     method: string,
     path: string,
-    body: unknown
+    body?: unknown
   ): Promise<T> {
     const url = this.buildUrl(path);
     const res = await this.call(url, {
@@ -129,9 +133,9 @@ export class SystemDoxApiClient {
         // X-API-Key is kept for backwards compatibility.
         Authorization: `Bearer ${this.config.apiKey}`,
         "X-API-Key": this.config.apiKey,
-        "Content-Type": "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       },
-      body: JSON.stringify(body),
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
 
     if (!res.ok) throw new SystemDoxApiError(res.status, await res.text());

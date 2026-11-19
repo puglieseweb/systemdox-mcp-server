@@ -367,13 +367,14 @@ export async function setupMcpServer(opts: McpSetupOptions): Promise<McpSetupRes
   out(
     `\n  Your key for ${workspace} is in ${credentialsPath()} (readable by you alone), not in these configs.\n` +
       "\n  Done! Restart your AI coding tool to activate the SystemDox MCP server.\n" +
-      "  The server provides 25 tools: get_context, get_team_setup, get_checks,\n" +
+      "  The server provides 27 tools: get_context, get_team_setup, get_checks,\n" +
       "  get_project_rules, get_prompt_templates, get_specs, get_docs,\n" +
       "  get_tech_stack, get_planning_context, get_plan_board, get_change,\n" +
       "  get_document_links, trace_document_path, get_graph_stats,\n" +
-      "  create_check, create_project_rule, create_prompt_template,\n" +
-      "  update_spec, report_decision, publish_skill, list_skills,\n" +
-      "  install_skill, publish_setup_part, resolve_person, sync_memory.\n\n" +
+      "  create_check, create_project_rule, update_project_rule,\n" +
+      "  delete_project_rule, create_prompt_template, update_spec,\n" +
+      "  report_decision, publish_skill, list_skills, install_skill,\n" +
+      "  publish_setup_part, resolve_person, sync_memory.\n\n" +
       "  get_guardrails and create_guardrail remain registered as deprecated\n" +
       "  aliases of get_checks and create_check — existing configs keep working.\n"
   );

@@ -145,7 +145,9 @@ Read: `get_checks`, `get_specs`, `get_docs`, `get_tech_stack`,
 `get_project_rules`, `get_prompt_templates`, `get_team_setup`, `get_document_links`,
 `trace_document_path`, `get_graph_stats`. Write: `create_check`,
 `update_spec`, `report_decision`, `create_project_rule`,
-`create_prompt_template`. Write tools require an API key with `editor`+ role.
+`update_project_rule`, `delete_project_rule`, `create_prompt_template`.
+`get_project_rules` shows each rule's id, which `update_project_rule` and
+`delete_project_rule` take. Write tools require an API key with `editor`+ role.
 
 Skills (ADR-216): `publish_skill`, `list_skills`, `install_skill`. A Claude
 Code skill folder (`SKILL.md` plus its references and scripts) is published

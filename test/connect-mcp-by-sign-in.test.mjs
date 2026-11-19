@@ -859,8 +859,8 @@ const READ_TOOLS = [
   "get_document_links", "trace_document_path", "get_graph_stats", "list_skills", "install_skill", "resolve_person",
 ];
 const WRITE_TOOLS = [
-  "create_check", "create_guardrail", "create_project_rule", "create_prompt_template", "update_spec",
-  "report_decision", "publish_skill", "publish_setup_part",
+  "create_check", "create_guardrail", "create_project_rule", "update_project_rule", "delete_project_rule",
+  "create_prompt_template", "update_spec", "report_decision", "publish_skill", "publish_setup_part",
 ];
 
 const CHECK = { id: "1", title: "No secrets in code", description: "d", category: "security", severity: "high" };

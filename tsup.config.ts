@@ -52,6 +52,11 @@ export default defineConfig({
     // An entry point so the change-page binder and the get_change contract
     // test drive the tool against a faked fetch (ADR-218).
     "src/tools/get-change.ts",
+    // Entry points so the edit-project-rules binder drives the three rule
+    // tools against a faked fetch (RUL-M-nn).
+    "src/tools/get-project-rules.ts",
+    "src/tools/update-project-rule.ts",
+    "src/tools/delete-project-rule.ts",
     // Entry points so the authored-skills unit tests drive the folder reader,
     // the install with its edit check, and the three tools against a fake API.
     "src/lib/skills.ts",

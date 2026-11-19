@@ -15,6 +15,8 @@ import { registerUpdateSpec } from "./tools/update-spec.js";
 import { registerReportDecision } from "./tools/report-decision.js";
 import { registerGetProjectRules } from "./tools/get-project-rules.js";
 import { registerCreateProjectRule } from "./tools/create-project-rule.js";
+import { registerUpdateProjectRule } from "./tools/update-project-rule.js";
+import { registerDeleteProjectRule } from "./tools/delete-project-rule.js";
 import { registerGetPromptTemplates } from "./tools/get-prompt-templates.js";
 import { registerCreatePromptTemplate } from "./tools/create-prompt-template.js";
 import { registerSkillTools } from "./tools/skills.js";
@@ -54,6 +56,8 @@ const WRITE_TOOLS = [
   "create_check",
   "create_guardrail",
   "create_project_rule",
+  "update_project_rule",
+  "delete_project_rule",
   "create_prompt_template",
   "update_spec",
   "report_decision",
@@ -127,6 +131,8 @@ export function createServer(
   registerUpdateSpec(server, apiClient);
   registerReportDecision(server, apiClient);
   registerCreateProjectRule(server, apiClient);
+  registerUpdateProjectRule(server, apiClient);
+  registerDeleteProjectRule(server, apiClient);
   registerCreatePromptTemplate(server, apiClient);
 
   // Authored skills: publish, list, install (ADR-216)

@@ -55,7 +55,7 @@ const r3 = await handler(
 check("tools/list 200", r3.statusCode === 200, `got ${r3.statusCode}: ${r3.body?.slice(0, 200)}`);
 const tools = JSON.parse(r3.body)?.result?.tools ?? [];
 const toolNames = tools.map((t) => t.name);
-check("26 tools registered", tools.length === 26, `got ${tools.length}: ${toolNames.join(", ")}`);
+check("28 tools registered", tools.length === 28, `got ${tools.length}: ${toolNames.join(", ")}`);
 // ADR-218: a build session reads its change's brief before it writes code.
 check("get_change registered", toolNames.includes("get_change"), "missing get_change");
 check("get_team_setup registered", toolNames.includes("get_team_setup"), "missing get_team_setup");
